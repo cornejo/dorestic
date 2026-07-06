@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.0 — 2026-07-06
+## v0.1.0 — 2026-07-06
 
 ### Added
 - Proper Python package (`src/dorestic/`) installable via `uv tool install`
