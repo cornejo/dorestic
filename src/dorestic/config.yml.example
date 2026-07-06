@@ -1,0 +1,45 @@
+# Restic backup configuration
+#
+# Edit this file and fill in your values.
+
+# Path to the restic repository (required)
+repository: /mnt/backup/backup1
+
+# Path to a file containing the restic repository password (required)
+# The file should contain only the password, no trailing newline.
+# This is mounted into the restic container via RESTIC_PASSWORD_FILE —
+# the password never appears on the command line.
+password_file: /etc/backup/restic-password
+
+# Restic Docker image (optional, default: restic/restic:latest)
+# restic_image: restic/restic:latest
+
+# Script to run after the entire backup completes (optional)
+# Called with: $1 = overall exit code (0 = success), $2 = log file path
+# The log file is deleted after on_complete returns — copy or upload it
+# inside the script if you want to keep it.
+# on_complete: /path/to/on_complete.sh
+
+# Snapshot retention policy (optional, these are the defaults)
+# retention:
+#   daily: 7
+#   weekly: 4
+#   monthly: 12
+
+# Host-only backup groups — not tied to any Docker container (optional)
+# Each group gets its own tagged restic snapshot.
+# host_groups:
+#   - tag: documents
+#     paths:
+#       - /mnt/fileserver/share
+#       - /mnt/fileserver/share-private
+#     exclude:
+#       - "*.tmp"
+#
+#   - tag: docker-config
+#     paths:
+#       - /mnt/fileserver/docker
+#     exclude:
+#       - "aosp-mirror/mirror"
+#     # on_start: /path/to/pre-backup.sh     # called with: $1 = tag name
+#     # on_complete: /path/to/post-backup.sh  # called with: $1 = exit code, $2 = tag name
