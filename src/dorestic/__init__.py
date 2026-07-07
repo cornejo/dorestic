@@ -33,6 +33,7 @@ from dorestic.paths import (
     resolve_host_paths as resolve_host_paths,
 )
 from dorestic.restic import (
+    make_restic_hostname as make_restic_hostname,
     run_restic as run_restic,
     run_scope_backup as run_scope_backup,
 )

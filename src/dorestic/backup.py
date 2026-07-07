@@ -28,7 +28,7 @@ from dorestic.models import (
     ScopeResult,
 )
 from dorestic.paths import resolve_host_paths
-from dorestic.restic import run_restic, run_scope_backup
+from dorestic.restic import make_restic_hostname, run_restic, run_scope_backup
 
 log = logging.getLogger("backup")
 
@@ -117,11 +117,13 @@ def backup_container(
 
     container_result = ScopeResult(exit_code=0, skipped=True)
     if container_paths and container_on_start_ok:
+        container_tag = f"{target.name}:container"
         exit_code = run_scope_backup(
-            f"{target.name}:container",
+            container_tag,
             container_paths,
             target.container_scope.exclude if target.container_scope else [],
             config=config,
+            hostname=make_restic_hostname("container", target.name),
         )
         container_result = ScopeResult(exit_code=exit_code)
         if exit_code == 0:
@@ -133,11 +135,13 @@ def backup_container(
 
     host_result = ScopeResult(exit_code=0, skipped=True)
     if host_paths and host_on_start_ok:
+        host_tag = f"{target.name}:host"
         exit_code = run_scope_backup(
-            f"{target.name}:host",
+            host_tag,
             host_paths,
             target.host_scope.exclude if target.host_scope else [],
             config=config,
+            hostname=make_restic_hostname("host", target.name),
         )
         host_result = ScopeResult(exit_code=exit_code)
         if exit_code == 0:
@@ -201,7 +205,10 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
                 run_hook(group.on_complete, env={**tag_env, "DORESTIC_EXIT_CODE": str(result.exit_code)})
             return result
 
-    exit_code = run_scope_backup(group.tag, resolved_paths, group.exclude, config=config)
+    exit_code = run_scope_backup(
+        group.tag, resolved_paths, group.exclude, config=config,
+        hostname=make_restic_hostname("host", group.tag),
+    )
     result = ScopeResult(exit_code=exit_code)
     if exit_code == 0:
         log.info("  backup OK")
@@ -298,7 +305,7 @@ def run_backup(config_path: str) -> None:
         log.info("=== Forgetting old snapshots and pruning ===")
         run_restic(
             "forget",
-            "--group-by", "tags",
+            "--group-by", "host,tags",
             "--keep-daily", str(config.retention.daily),
             "--keep-weekly", str(config.retention.weekly),
             "--keep-monthly", str(config.retention.monthly),

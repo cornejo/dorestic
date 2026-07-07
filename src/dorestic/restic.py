@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Literal, overload
@@ -9,12 +11,28 @@ from dorestic.models import BackupConfig
 
 log = logging.getLogger("backup")
 
+MAX_HOSTNAME_LEN = 63
+
+
+def make_restic_hostname(scope: str, tag: str) -> str:
+    """Build a deterministic hostname for restic parent-snapshot matching.
+
+    Docker hostnames follow RFC 1123: alphanumeric and hyphens, max 63 chars.
+    """
+    base = re.sub(r"[^a-zA-Z0-9-]", "-", f"dorestic-{scope}-{tag}")
+    if len(base) <= MAX_HOSTNAME_LEN:
+        return base
+    prefix = base[: MAX_HOSTNAME_LEN - 9]
+    suffix = hashlib.sha256(base.encode()).hexdigest()[:8]
+    return f"{prefix}-{suffix}"
+
 
 @overload
 def run_restic(
     *args: str,
     config: BackupConfig,
     mount_paths: list[Path] | None = None,
+    hostname: str | None = None,
     capture: Literal[False] = False,
 ) -> int: ...
 
@@ -24,6 +42,7 @@ def run_restic(
     *args: str,
     config: BackupConfig,
     mount_paths: list[Path] | None = None,
+    hostname: str | None = None,
     capture: Literal[True],
 ) -> tuple[int, str]: ...
 
@@ -32,6 +51,7 @@ def run_restic(
     *args: str,
     config: BackupConfig,
     mount_paths: list[Path] | None = None,
+    hostname: str | None = None,
     capture: bool = False,
 ) -> int | tuple[int, str]:
     """Run a restic command inside a container (--rm).
@@ -49,6 +69,9 @@ def run_restic(
         "-e", f"RESTIC_PASSWORD_FILE={password_mount}",
         "-v", f"{config.password_file}:{password_mount}:ro",
     ]
+
+    if hostname:
+        cmd.extend(["-h", hostname])
 
     if Path(config.repository).is_absolute():
         cmd.extend(["-v", f"{config.repository}:{config.repository}"])
@@ -71,7 +94,7 @@ def run_restic(
 
 def run_scope_backup(
     tag: str, paths: list[Path], exclude: list[str],
-    config: BackupConfig,
+    config: BackupConfig, hostname: str | None = None,
 ) -> int:
     if not paths:
         return 0
@@ -85,4 +108,4 @@ def run_scope_backup(
     for path in paths:
         log.info("    %s", path)
 
-    return run_restic(*args, config=config, mount_paths=paths)
+    return run_restic(*args, config=config, mount_paths=paths, hostname=hostname)
