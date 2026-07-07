@@ -125,27 +125,33 @@ def backup_container(
 
     container_result = ScopeResult(exit_code=0, skipped=True)
     if container_paths and container_on_start_ok:
-        container_result = ScopeResult(
-            exit_code=run_scope_backup(
-                f"{target.name}:container",
-                container_paths,
-                target.container_scope.exclude if target.container_scope else [],
-                config=config,
-            )
+        exit_code = run_scope_backup(
+            f"{target.name}:container",
+            container_paths,
+            target.container_scope.exclude if target.container_scope else [],
+            config=config,
         )
+        container_result = ScopeResult(exit_code=exit_code)
+        if exit_code == 0:
+            log.info("  container backup OK")
+        else:
+            log.error("  container backup FAILED (exit %d)", exit_code)
     elif container_paths and not container_on_start_ok:
         container_result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
 
     host_result = ScopeResult(exit_code=0, skipped=True)
     if host_paths and host_on_start_ok:
-        host_result = ScopeResult(
-            exit_code=run_scope_backup(
-                f"{target.name}:host",
-                host_paths,
-                target.host_scope.exclude if target.host_scope else [],
-                config=config,
-            )
+        exit_code = run_scope_backup(
+            f"{target.name}:host",
+            host_paths,
+            target.host_scope.exclude if target.host_scope else [],
+            config=config,
         )
+        host_result = ScopeResult(exit_code=exit_code)
+        if exit_code == 0:
+            log.info("  host backup OK")
+        else:
+            log.error("  host backup FAILED (exit %d)", exit_code)
     elif host_paths and not host_on_start_ok:
         host_result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
 
@@ -205,6 +211,10 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
 
     exit_code = run_scope_backup(group.tag, resolved_paths, group.exclude, config=config)
     result = ScopeResult(exit_code=exit_code)
+    if exit_code == 0:
+        log.info("  backup OK")
+    else:
+        log.error("  backup FAILED (exit %d)", exit_code)
 
     if group.on_complete:
         log.info("  on_complete: %s", group.on_complete)
@@ -255,10 +265,13 @@ def run_backup(config_path: str) -> None:
                 sys.exit(1)
 
         log.info("=== Initializing repository if needed ===")
-        init_code = run_restic("init", config=config)
-        if init_code != 0:
-            if run_restic("cat", "config", config=config) != 0:
-                log.error("Repository init failed and no existing repo found at %s", config.repository)
+        init_code, init_output = run_restic("init", config=config, capture=True)
+        if init_code == 0:
+            log.info("Initialized new repository at %s", config.repository)
+        else:
+            check_code, _ = run_restic("cat", "config", config=config, capture=True)
+            if check_code != 0:
+                log.error("Repository init failed at %s:\n%s", config.repository, init_output)
                 sys.exit(1)
 
         client = docker.DockerClient.from_env()
