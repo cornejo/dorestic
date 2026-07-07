@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from dorestic import (
+    DEFAULT_CONTAINER_SHELL,
     EXIT_ON_START_FAILED,
     BackupConfig,
     HostGroup,
@@ -19,8 +20,10 @@ from dorestic import (
     expand_depth_limited_path,
     find_config,
     load_config,
+    make_restic_hostname,
     parse_comma_list,
     resolve_host_path_spec,
+    run_hook,
 )
 from dorestic.cli import write_example_config
 
@@ -137,6 +140,85 @@ class TestExpandDepthLimitedPath:
 
 
 
+# ── make_restic_hostname ───────────────────────────────────
+
+
+class TestMakeResticHostname:
+    def test_basic(self):
+        assert make_restic_hostname("container", "immich") == "dorestic-container-immich"
+
+    def test_host_scope(self):
+        assert make_restic_hostname("host", "documents") == "dorestic-host-documents"
+
+    def test_special_chars_replaced(self):
+        result = make_restic_hostname("container", "my_app.server")
+        assert result == "dorestic-container-my-app-server"
+
+    def test_deterministic(self):
+        a = make_restic_hostname("container", "test")
+        b = make_restic_hostname("container", "test")
+        assert a == b
+
+    def test_different_scopes_differ(self):
+        a = make_restic_hostname("container", "app")
+        b = make_restic_hostname("host", "app")
+        assert a != b
+
+    def test_max_length_63(self):
+        long_tag = "a" * 100
+        result = make_restic_hostname("container", long_tag)
+        assert len(result) <= 63
+
+    def test_long_name_has_hash_suffix(self):
+        long_tag = "a" * 100
+        result = make_restic_hostname("container", long_tag)
+        assert len(result) == 63
+        assert result[-9] == "-"
+
+    def test_long_name_deterministic(self):
+        long_tag = "very-long-container-name-that-exceeds-the-limit-" + "x" * 60
+        a = make_restic_hostname("container", long_tag)
+        b = make_restic_hostname("container", long_tag)
+        assert a == b
+
+    def test_similar_long_names_differ(self):
+        base = "x" * 80
+        a = make_restic_hostname("container", base + "aaa")
+        b = make_restic_hostname("container", base + "bbb")
+        assert a != b
+
+
+# ── run_hook ───────────────────────────────────────────────
+
+
+class TestRunHook:
+    def test_returns_exit_code(self):
+        assert run_hook("exit 0") == 0
+        assert run_hook("exit 1") == 1
+
+    def test_runs_via_sh(self):
+        assert run_hook("echo hello && echo world") == 0
+
+    def test_env_vars_available(self, tmp_path: Path):
+        out = tmp_path / "out.txt"
+        run_hook(f"echo $DORESTIC_TAG > {out}", env={"DORESTIC_TAG": "myapp"})
+        assert out.read_text().strip() == "myapp"
+
+    def test_multiple_env_vars(self, tmp_path: Path):
+        out = tmp_path / "out.txt"
+        run_hook(
+            f'echo "$DORESTIC_TAG $DORESTIC_EXIT_CODE" > {out}',
+            env={"DORESTIC_TAG": "db", "DORESTIC_EXIT_CODE": "0"},
+        )
+        assert out.read_text().strip() == "db 0"
+
+    def test_inherits_parent_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.setenv("DORESTIC_TEST_MARKER", "inherited")
+        out = tmp_path / "out.txt"
+        run_hook(f"echo $DORESTIC_TEST_MARKER > {out}")
+        assert out.read_text().strip() == "inherited"
+
+
 # ── TeeStream ──────────────────────────────────────────────
 
 
@@ -241,6 +323,11 @@ class TestDataModels:
         assert c.exclude == []
         assert c.on_start is None
         assert c.on_complete is None
+        assert c.shell == DEFAULT_CONTAINER_SHELL
+
+    def test_scope_config_custom_shell(self):
+        c = ScopeConfig(paths=["/data"], shell="/bin/bash")
+        assert c.shell == "/bin/bash"
 
     def test_scope_config_full(self):
         c = ScopeConfig(
