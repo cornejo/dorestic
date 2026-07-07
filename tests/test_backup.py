@@ -127,7 +127,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="echo 'starting' > /data/hook_started",
-                        on_complete="echo $1 > /data/hook_completed",
+                        on_complete="echo $2 > /data/hook_completed",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -150,7 +150,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="echo 'starting' > /data/hook_started",
-                        on_complete="echo $1 > /data/hook_completed",
+                        on_complete="echo $2 > /data/hook_completed",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -174,7 +174,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="exit 1",
-                        on_complete="echo $1 > /data/complete_code",
+                        on_complete="echo $2 > /data/complete_code",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -198,7 +198,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="exit 1",
-                        on_complete="echo $1 > /data/complete_code",
+                        on_complete="echo $2 > /data/complete_code",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -400,7 +400,7 @@ class TestBackupHostGroup:
         complete_marker = tmp_path / "completed"
         complete_script = tmp_path / "complete.sh"
         complete_script.write_text(
-            f"#!/bin/sh\necho $1 > {complete_marker}\n"
+            f"#!/bin/sh\necho $2 > {complete_marker}\n"
         )
         complete_script.chmod(0o755)
 
@@ -423,7 +423,7 @@ class TestBackupHostGroup:
 
         marker = tmp_path / "complete_code"
         complete_script = tmp_path / "complete.sh"
-        complete_script.write_text(f"#!/bin/sh\necho $1 > {marker}\n")
+        complete_script.write_text(f"#!/bin/sh\necho $2 > {marker}\n")
         complete_script.chmod(0o755)
 
         with patch("dorestic.backup.run_scope_backup", return_value=0):
@@ -464,7 +464,7 @@ class TestBackupHostGroup:
 
         marker = tmp_path / "tag_received"
         script = tmp_path / "capture_tag.sh"
-        script.write_text(f"#!/bin/sh\necho $1 > {marker}\n")
+        script.write_text(f"#!/bin/sh\necho $2 > {marker}\n")
         script.chmod(0o755)
 
         with patch("dorestic.backup.run_scope_backup", return_value=0):
@@ -485,7 +485,7 @@ class TestBackupHostGroup:
 
         marker = tmp_path / "tag_received"
         script = tmp_path / "capture.sh"
-        script.write_text(f"#!/bin/sh\necho $2 > {marker}\n")
+        script.write_text(f"#!/bin/sh\necho $4 > {marker}\n")
         script.chmod(0o755)
 
         with patch("dorestic.backup.run_scope_backup", return_value=0):

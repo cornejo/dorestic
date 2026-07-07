@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.0 — 2026-07-07
+
+### Added
+- `on_start` hook for top-level config — runs before the backup begins, aborts on failure
+- `--tag` argument passed to container `on_start` and `on_complete` hooks
+
+### Changed
+- **Breaking**: all hook scripts now receive named flags (`--exit-code`, `--tag`, `--logfile`) instead of positional arguments
+- Container hooks pass args as shell positional params via `sh -c` instead of string concatenation
+- Password file documentation updated to note trailing newlines are fine
+
 ## v0.1.1 — 2026-07-07
 
 ### Fixed

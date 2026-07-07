@@ -303,6 +303,7 @@ class TestLoadConfig:
         assert cfg.repository == "/mnt/backup"
         assert cfg.password_file == str(pw)
         assert cfg.restic_image == "restic/restic:latest"
+        assert cfg.on_start is None
         assert cfg.on_complete is None
         assert cfg.retention.daily == 7
         assert cfg.retention.weekly == 4
@@ -316,6 +317,7 @@ class TestLoadConfig:
             "repository": "/backup",
             "password_file": str(pw),
             "restic_image": "restic/restic:0.16",
+            "on_start": "/scripts/start.sh",
             "on_complete": "/scripts/done.sh",
             "retention": {"daily": 14, "weekly": 8, "monthly": 24},
             "host_groups": [
@@ -331,6 +333,7 @@ class TestLoadConfig:
 
         cfg = load_config(str(config_file))
         assert cfg.restic_image == "restic/restic:0.16"
+        assert cfg.on_start == "/scripts/start.sh"
         assert cfg.on_complete == "/scripts/done.sh"
         assert cfg.retention.daily == 14
         assert cfg.retention.weekly == 8

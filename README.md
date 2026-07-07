@@ -81,6 +81,7 @@ repository: /mnt/backup/backup1
 password_file: /etc/backup/restic-password
 
 # restic_image: restic/restic:latest
+# on_start: /path/to/on_start.sh
 # on_complete: /path/to/on_complete.sh
 
 # retention:
@@ -103,7 +104,8 @@ The password file is mounted read-only into the restic container via
 | `repository` | Yes | Restic repository path |
 | `password_file` | Yes | Path to a file containing the restic password |
 | `restic_image` | No | Docker image for restic (default: `restic/restic:latest`) |
-| `on_complete` | No | Script to run after the entire backup (`$1` = exit code, `$2` = log path) |
+| `on_start` | No | Script to run before the backup starts. If it exits non-zero, the backup is aborted. |
+| `on_complete` | No | Script to run after the entire backup (`--exit-code N --logfile PATH`) |
 | `retention` | No | Snapshot retention policy (default: 7 daily, 4 weekly, 12 monthly) |
 | `host_groups` | No | Host-only backup groups (see below) |
 
@@ -141,12 +143,12 @@ compose project directory).
 | `backup.enable` | Yes | `"true"` to opt in |
 | `backup.container.paths` | No | Comma-separated container-internal paths to back up |
 | `backup.container.exclude` | No | Comma-separated restic exclude patterns for container scope |
-| `backup.container.on_start` | No | Shell command run inside the container before container backup |
-| `backup.container.on_complete` | No | Shell command run inside the container after container backup (`$1` = exit code) |
+| `backup.container.on_start` | No | Shell command run inside the container before container backup (`--tag NAME`) |
+| `backup.container.on_complete` | No | Shell command run inside the container after container backup (`--exit-code N --tag NAME`) |
 | `backup.host.paths` | No | Comma-separated paths relative to the compose project directory |
 | `backup.host.exclude` | No | Comma-separated restic exclude patterns for host scope |
-| `backup.host.on_start` | No | Shell command run inside the container before host backup |
-| `backup.host.on_complete` | No | Shell command run inside the container after host backup (`$1` = exit code) |
+| `backup.host.on_start` | No | Shell command run inside the container before host backup (`--tag NAME`) |
+| `backup.host.on_complete` | No | Shell command run inside the container after host backup (`--exit-code N --tag NAME`) |
 | `backup.suppress-mount-warning` | No | `"true"` to silence warnings about unmounted paths |
 
 ### Container paths
@@ -245,8 +247,8 @@ host_groups:
 | `tag` | Yes | Restic tag for this group's snapshot |
 | `paths` | Yes | List of absolute host paths to back up |
 | `exclude` | No | List of restic exclude patterns |
-| `on_start` | No | Script to run before backup (`$1` = tag). Failure skips the backup. |
-| `on_complete` | No | Script to run after backup (`$1` = exit code, `$2` = tag) |
+| `on_start` | No | Script to run before backup (`--tag TAG`). Failure skips the backup. |
+| `on_complete` | No | Script to run after backup (`--exit-code N --tag TAG`) |
 
 ## Examples
 

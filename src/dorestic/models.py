@@ -54,6 +54,7 @@ class BackupConfig:
     repository: str
     password_file: str
     restic_image: str = DEFAULT_RESTIC_IMAGE
+    on_start: str | None = None
     on_complete: str | None = None
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
     host_groups: list[HostGroup] = field(default_factory=lambda: list[HostGroup]())
