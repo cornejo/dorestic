@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.1 — 2026-07-07
+
+### Fixed
+- `--init` with a non-existent directory path created a file instead of a directory with `config.yml` inside it
+
 ## v0.1.0 — 2026-07-06
 
 ### Added
