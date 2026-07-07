@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1 — 2026-07-07
+
+### Fixed
+- Suppress alarming "Fatal: config file already exists" from restic init when repository already exists
+- Add OK/FAILED log lines after each scope backup so the log file records outcomes
+
 ## v0.2.0 — 2026-07-07
 
 ### Added
