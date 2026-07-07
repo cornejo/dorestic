@@ -12,7 +12,7 @@ def write_example_config(dest: str) -> None:
     """Write the bundled config.yml.example to the given path."""
     dest_path = Path(dest)
 
-    if dest_path.is_dir():
+    if dest_path.suffix != ".yml":
         dest_path = dest_path / "config.yml"
 
     if dest_path.exists():
