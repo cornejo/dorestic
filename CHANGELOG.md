@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.0 — 2026-07-07
+
+### Changed
+- **Breaking**: hooks now use `DORESTIC_TAG`, `DORESTIC_EXIT_CODE`, and `DORESTIC_LOGFILE` env vars instead of named flags
+- **Breaking**: host scope `on_start`/`on_complete` now run on the host, not inside the container
+- **Breaking**: `backup.enable=true` without `container.paths` or `host.paths` is now a hard error
+- All hooks run via `sh -c` (both host and container)
+
+### Added
+- `backup.container.shell` label to configure the shell for container hooks (default: `sh`)
+- Documentation for `suppress-mount-warning` label and `docker cp` fallback
+
+### Removed
+- Auto-discovery of compose files (undocumented implicit behavior)
+
 ## v0.2.1 — 2026-07-07
 
 ### Fixed
