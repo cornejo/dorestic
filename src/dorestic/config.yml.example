@@ -6,16 +6,20 @@
 repository: /mnt/backup/backup1
 
 # Path to a file containing the restic repository password (required)
-# The file should contain only the password, no trailing newline.
 # This is mounted into the restic container via RESTIC_PASSWORD_FILE —
 # the password never appears on the command line.
+# A trailing newline is fine (restic strips it).
 password_file: /etc/backup/restic-password
 
 # Restic Docker image (optional, default: restic/restic:latest)
 # restic_image: restic/restic:latest
 
+# Script to run before the backup starts (optional)
+# If it exits non-zero, the entire backup is aborted.
+# on_start: /path/to/on_start.sh
+
 # Script to run after the entire backup completes (optional)
-# Called with: $1 = overall exit code (0 = success), $2 = log file path
+# Called with: --exit-code N --logfile /path/to/log
 # The log file is deleted after on_complete returns — copy or upload it
 # inside the script if you want to keep it.
 # on_complete: /path/to/on_complete.sh
@@ -41,5 +45,5 @@ password_file: /etc/backup/restic-password
 #       - /mnt/fileserver/docker
 #     exclude:
 #       - "aosp-mirror/mirror"
-#     # on_start: /path/to/pre-backup.sh     # called with: $1 = tag name
-#     # on_complete: /path/to/post-backup.sh  # called with: $1 = exit code, $2 = tag name
+#     # on_start: /path/to/pre-backup.sh     # called with: --tag TAG
+#     # on_complete: /path/to/post-backup.sh  # called with: --exit-code N --tag TAG

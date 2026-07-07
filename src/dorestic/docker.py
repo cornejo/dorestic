@@ -33,8 +33,9 @@ def _get_container_name(container: Container) -> str:
     return container.name or container.short_id
 
 
-def run_docker_exec(container: Container, command: str) -> tuple[int, str]:
-    result = container.exec_run(["sh", "-c", command])
+def run_docker_exec(container: Container, command: str, *args: str) -> tuple[int, str]:
+    cmd = ["sh", "-c", command, "--", *args]
+    result = container.exec_run(cmd)
     exit_code = result.exit_code if result.exit_code is not None else -1
     output = result.output
     if isinstance(output, bytes):
