@@ -127,7 +127,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="echo 'starting' > /data/hook_started",
-                        on_complete="echo $2 > /data/hook_completed",
+                        on_complete="echo $DORESTIC_EXIT_CODE > /data/hook_completed",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -150,7 +150,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="echo 'starting' > /data/hook_started",
-                        on_complete="echo $2 > /data/hook_completed",
+                        on_complete="echo $DORESTIC_EXIT_CODE > /data/hook_completed",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -174,7 +174,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="exit 1",
-                        on_complete="echo $2 > /data/complete_code",
+                        on_complete="echo $DORESTIC_EXIT_CODE > /data/complete_code",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -198,7 +198,7 @@ class TestBackupContainerLifecycle:
                     container_scope=ScopeConfig(
                         paths=["/data"],
                         on_start="exit 1",
-                        on_complete="echo $2 > /data/complete_code",
+                        on_complete="echo $DORESTIC_EXIT_CODE > /data/complete_code",
                     ),
                 ),
                 config=DUMMY_CONFIG,
@@ -393,23 +393,14 @@ class TestBackupHostGroup:
         data_dir.mkdir()
         (data_dir / "file.txt").write_text("x")
 
-        fail_script = tmp_path / "fail.sh"
-        fail_script.write_text("#!/bin/sh\nexit 1\n")
-        fail_script.chmod(0o755)
-
         complete_marker = tmp_path / "completed"
-        complete_script = tmp_path / "complete.sh"
-        complete_script.write_text(
-            f"#!/bin/sh\necho $2 > {complete_marker}\n"
-        )
-        complete_script.chmod(0o755)
 
         with patch("dorestic.backup.run_scope_backup"):
             group = HostGroup(
                 tag="t",
                 paths=[str(data_dir)],
-                on_start=str(fail_script),
-                on_complete=str(complete_script),
+                on_start="exit 1",
+                on_complete=f"echo $DORESTIC_EXIT_CODE > {complete_marker}",
             )
             backup_host_group(group, config=DUMMY_CONFIG)
 
@@ -422,15 +413,12 @@ class TestBackupHostGroup:
         (data_dir / "file.txt").write_text("x")
 
         marker = tmp_path / "complete_code"
-        complete_script = tmp_path / "complete.sh"
-        complete_script.write_text(f"#!/bin/sh\necho $2 > {marker}\n")
-        complete_script.chmod(0o755)
 
         with patch("dorestic.backup.run_scope_backup", return_value=0):
             group = HostGroup(
                 tag="t",
                 paths=[str(data_dir)],
-                on_complete=str(complete_script),
+                on_complete=f"echo $DORESTIC_EXIT_CODE > {marker}",
             )
             backup_host_group(group, config=DUMMY_CONFIG)
 
@@ -442,15 +430,11 @@ class TestBackupHostGroup:
         data_dir.mkdir()
         (data_dir / "file.txt").write_text("x")
 
-        ok_script = tmp_path / "ok.sh"
-        ok_script.write_text("#!/bin/sh\nexit 0\n")
-        ok_script.chmod(0o755)
-
         with patch("dorestic.backup.run_scope_backup", return_value=0) as mock_backup:
             group = HostGroup(
                 tag="t",
                 paths=[str(data_dir)],
-                on_start=str(ok_script),
+                on_start="exit 0",
             )
             result = backup_host_group(group, config=DUMMY_CONFIG)
 
@@ -463,15 +447,12 @@ class TestBackupHostGroup:
         (data_dir / "file.txt").write_text("x")
 
         marker = tmp_path / "tag_received"
-        script = tmp_path / "capture_tag.sh"
-        script.write_text(f"#!/bin/sh\necho $2 > {marker}\n")
-        script.chmod(0o755)
 
         with patch("dorestic.backup.run_scope_backup", return_value=0):
             group = HostGroup(
                 tag="my-tag",
                 paths=[str(data_dir)],
-                on_start=str(script),
+                on_start=f"echo $DORESTIC_TAG > {marker}",
             )
             backup_host_group(group, config=DUMMY_CONFIG)
 
@@ -484,15 +465,12 @@ class TestBackupHostGroup:
         (data_dir / "file.txt").write_text("x")
 
         marker = tmp_path / "tag_received"
-        script = tmp_path / "capture.sh"
-        script.write_text(f"#!/bin/sh\necho $4 > {marker}\n")
-        script.chmod(0o755)
 
         with patch("dorestic.backup.run_scope_backup", return_value=0):
             group = HostGroup(
                 tag="my-tag",
                 paths=[str(data_dir)],
-                on_complete=str(script),
+                on_complete=f"echo $DORESTIC_TAG > {marker}",
             )
             backup_host_group(group, config=DUMMY_CONFIG)
 
