@@ -3,21 +3,44 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+from typing import Literal, overload
 
 from dorestic.models import BackupConfig
 
 log = logging.getLogger("backup")
 
 
+@overload
 def run_restic(
     *args: str,
     config: BackupConfig,
     mount_paths: list[Path] | None = None,
-) -> int:
+    capture: Literal[False] = False,
+) -> int: ...
+
+
+@overload
+def run_restic(
+    *args: str,
+    config: BackupConfig,
+    mount_paths: list[Path] | None = None,
+    capture: Literal[True],
+) -> tuple[int, str]: ...
+
+
+def run_restic(
+    *args: str,
+    config: BackupConfig,
+    mount_paths: list[Path] | None = None,
+    capture: bool = False,
+) -> int | tuple[int, str]:
     """Run a restic command inside a container (--rm).
 
     The password file is mounted into the container and referenced via
     RESTIC_PASSWORD_FILE — nothing sensitive appears on the command line.
+
+    If capture is True, returns (exit_code, combined_output) instead of
+    just exit_code.
     """
     password_mount = "/run/secrets/restic-password"
     cmd: list[str] = [
@@ -39,6 +62,9 @@ def run_restic(
                 mounted.add(path_str)
 
     cmd.extend([config.restic_image, *args])
+    if capture:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode, (result.stdout + result.stderr).strip()
     result = subprocess.run(cmd)
     return result.returncode
 
