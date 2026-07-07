@@ -42,13 +42,6 @@ def expand_depth_limited_path(base: Path, max_depth: int) -> list[Path]:
     return [Path(line) for line in result.stdout.strip().splitlines() if line]
 
 
-def auto_discover_compose_files(compose_dir: str) -> list[Path]:
-    compose_path = Path(compose_dir)
-    if not compose_path.is_dir():
-        return []
-    return [p for p in compose_path.iterdir() if p.is_file()]
-
-
 def resolve_host_paths(target: ContainerTarget) -> list[Path]:
     if not target.host_scope or not target.compose_dir:
         return []
@@ -66,7 +59,3 @@ def resolve_host_paths(target: ContainerTarget) -> list[Path]:
     return resolved
 
 
-def get_auto_discovered_paths(target: ContainerTarget) -> list[Path]:
-    if not target.compose_dir:
-        return []
-    return auto_discover_compose_files(target.compose_dir)

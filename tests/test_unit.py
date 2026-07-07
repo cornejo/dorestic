@@ -16,7 +16,6 @@ from dorestic import (
     ScopeResult,
     TeeStream,
     acquire_lock,
-    auto_discover_compose_files,
     expand_depth_limited_path,
     find_config,
     load_config,
@@ -136,28 +135,6 @@ class TestExpandDepthLimitedPath:
         assert files == []
 
 
-
-# ── auto_discover_compose_files ─────────────────────────────
-
-
-class TestAutoDiscoverComposeFiles:
-    def test_finds_files(self, tmp_path: Path) -> None:
-        compose_dir = tmp_path / "project"
-        compose_dir.mkdir()
-        (compose_dir / "docker-compose.yml").write_text("version: '3'")
-        (compose_dir / ".env").write_text("KEY=val")
-        (compose_dir / "subdir").mkdir()
-        (compose_dir / "subdir" / "nested.txt").write_text("x")
-
-        files = auto_discover_compose_files(str(compose_dir))
-        names = {f.name for f in files}
-        assert "docker-compose.yml" in names
-        assert ".env" in names
-        assert "nested.txt" not in names
-
-    def test_nonexistent_dir(self, tmp_path: Path) -> None:
-        files = auto_discover_compose_files(str(tmp_path / "nope"))
-        assert files == []
 
 
 # ── TeeStream ──────────────────────────────────────────────

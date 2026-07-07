@@ -15,12 +15,16 @@ class ScopeResult:
     skipped: bool = False
 
 
+DEFAULT_CONTAINER_SHELL = "sh"
+
+
 @dataclass
 class ScopeConfig:
     paths: list[str]
     exclude: list[str] = field(default_factory=lambda: list[str]())
     on_start: str | None = None
     on_complete: str | None = None
+    shell: str = DEFAULT_CONTAINER_SHELL
 
 
 @dataclass
