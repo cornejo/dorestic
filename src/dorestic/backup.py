@@ -27,7 +27,7 @@ from dorestic.models import (
     HostGroup,
     ScopeResult,
 )
-from dorestic.paths import get_auto_discovered_paths, resolve_host_paths
+from dorestic.paths import resolve_host_paths
 from dorestic.restic import run_restic, run_scope_backup
 
 log = logging.getLogger("backup")
@@ -67,8 +67,11 @@ def acquire_lock(config: BackupConfig) -> IO[str]:
     return lock_fd
 
 
-def run_host_script(script: str, *args: str) -> int:
-    result = subprocess.run([script, *args])
+def run_hook(command: str, env: dict[str, str] | None = None) -> int:
+    hook_env = os.environ.copy()
+    if env:
+        hook_env.update(env)
+    result = subprocess.run(["sh", "-c", command], env=hook_env)
     return result.returncode
 
 
@@ -83,19 +86,14 @@ def backup_container(
     container_paths = resolve_container_paths(target, staging_dir=staging_dir)
     host_paths = resolve_host_paths(target)
 
-    auto_paths = get_auto_discovered_paths(target)
-    if auto_paths:
-        existing_set = set(host_paths)
-        for p in auto_paths:
-            if p not in existing_set:
-                host_paths.append(p)
+    tag_env = {"DORESTIC_TAG": target.name}
 
     container_on_start_ok = True
     if target.container_scope and target.container_scope.on_start:
         log.info("  container.on_start: %s", target.container_scope.on_start)
         code, output = run_docker_exec(
             target.container, target.container_scope.on_start,
-            "--tag", target.name,
+            env=tag_env, shell=target.container_scope.shell,
         )
         if output:
             for line in output.splitlines():
@@ -110,13 +108,7 @@ def backup_container(
     host_on_start_ok = True
     if target.host_scope and target.host_scope.on_start:
         log.info("  host.on_start: %s", target.host_scope.on_start)
-        code, output = run_docker_exec(
-            target.container, target.host_scope.on_start,
-            "--tag", target.name,
-        )
-        if output:
-            for line in output.splitlines():
-                log.info("    %s", line)
+        code = run_hook(target.host_scope.on_start, env=tag_env)
         if code != 0:
             log.error(
                 "  host.on_start failed (exit %d), skipping host backup", code
@@ -159,7 +151,8 @@ def backup_container(
         log.info("  container.on_complete: %s", target.container_scope.on_complete)
         code, output = run_docker_exec(
             target.container, target.container_scope.on_complete,
-            "--exit-code", str(container_result.exit_code), "--tag", target.name,
+            env={**tag_env, "DORESTIC_EXIT_CODE": str(container_result.exit_code)},
+            shell=target.container_scope.shell,
         )
         if output:
             for line in output.splitlines():
@@ -169,13 +162,10 @@ def backup_container(
 
     if target.host_scope and target.host_scope.on_complete:
         log.info("  host.on_complete: %s", target.host_scope.on_complete)
-        code, output = run_docker_exec(
-            target.container, target.host_scope.on_complete,
-            "--exit-code", str(host_result.exit_code), "--tag", target.name,
+        code = run_hook(
+            target.host_scope.on_complete,
+            env={**tag_env, "DORESTIC_EXIT_CODE": str(host_result.exit_code)},
         )
-        if output:
-            for line in output.splitlines():
-                log.info("    %s", line)
         if code != 0:
             log.warning("  host.on_complete failed (exit %d)", code)
 
@@ -198,15 +188,17 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
         log.info("  no valid paths, skipping")
         return ScopeResult(exit_code=0, skipped=True)
 
+    tag_env = {"DORESTIC_TAG": group.tag}
+
     if group.on_start:
         log.info("  on_start: %s", group.on_start)
-        code = run_host_script(group.on_start, "--tag", group.tag)
+        code = run_hook(group.on_start, env=tag_env)
         if code != 0:
             log.error("  on_start failed (exit %d), skipping backup", code)
             result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
             if group.on_complete:
                 log.info("  on_complete: %s", group.on_complete)
-                run_host_script(group.on_complete, "--exit-code", str(result.exit_code), "--tag", group.tag)
+                run_hook(group.on_complete, env={**tag_env, "DORESTIC_EXIT_CODE": str(result.exit_code)})
             return result
 
     exit_code = run_scope_backup(group.tag, resolved_paths, group.exclude, config=config)
@@ -218,7 +210,7 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
 
     if group.on_complete:
         log.info("  on_complete: %s", group.on_complete)
-        code = run_host_script(group.on_complete, "--exit-code", str(result.exit_code), "--tag", group.tag)
+        code = run_hook(group.on_complete, env={**tag_env, "DORESTIC_EXIT_CODE": str(result.exit_code)})
         if code != 0:
             log.warning("  on_complete failed (exit %d)", code)
 
@@ -259,7 +251,7 @@ def run_backup(config_path: str) -> None:
 
         if config.on_start:
             log.info("Running on_start: %s", config.on_start)
-            start_code = run_host_script(config.on_start)
+            start_code = run_hook(config.on_start)
             if start_code != 0:
                 log.error("on_start failed (exit %d), aborting backup", start_code)
                 sys.exit(1)
@@ -328,7 +320,10 @@ def run_backup(config_path: str) -> None:
         if config.on_complete:
             log_file.flush()
             log.info("Running on_complete: %s", config.on_complete)
-            run_host_script(config.on_complete, "--exit-code", str(overall_exit), "--logfile", log_path)
+            run_hook(config.on_complete, env={
+                "DORESTIC_EXIT_CODE": str(overall_exit),
+                "DORESTIC_LOGFILE": log_path,
+            })
 
     except SystemExit:
         raise

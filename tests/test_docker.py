@@ -36,9 +36,9 @@ class TestDiscoverTargets:
         names = [t.name for t in targets]
         assert container.name in names
 
-    def test_ignores_production_prefix(self, docker_client: docker.DockerClient, test_container: tuple[Container, Path]) -> None:
-        """backup-test.* containers are NOT found with default 'backup' prefix."""
-        targets = discover_targets(docker_client, label_prefix="backup")
+    def test_ignores_different_prefix(self, docker_client: docker.DockerClient, test_container: tuple[Container, Path]) -> None:
+        """backup-test.* containers are NOT found with a different prefix."""
+        targets = discover_targets(docker_client, label_prefix="dorestic-no-match-4f9a2b")
         test_names = {t.name for t in targets}
         container, _ = test_container
         assert container.name not in test_names

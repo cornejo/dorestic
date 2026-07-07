@@ -8,6 +8,7 @@ import docker
 from docker.models.containers import Container
 
 from dorestic.models import (
+    DEFAULT_CONTAINER_SHELL,
     DEFAULT_LABEL_PREFIX,
     ContainerTarget,
     ScopeConfig,
@@ -33,9 +34,17 @@ def _get_container_name(container: Container) -> str:
     return container.name or container.short_id
 
 
-def run_docker_exec(container: Container, command: str, *args: str) -> tuple[int, str]:
-    cmd = ["sh", "-c", command, "--", *args]
-    result = container.exec_run(cmd)
+def run_docker_exec(
+    container: Container,
+    command: str,
+    env: dict[str, str] | None = None,
+    shell: str = "sh",
+) -> tuple[int, str]:
+    environment = env or {}
+    result = container.exec_run(
+        [shell, "-c", command],
+        environment=environment,
+    )
     exit_code = result.exit_code if result.exit_code is not None else -1
     output = result.output
     if isinstance(output, bytes):
@@ -151,6 +160,10 @@ def discover_targets(
                     f"— use '{label_prefix}.{scope}.exclude' instead"
                 )
 
+        container_shell = labels.get(
+            f"{label_prefix}.container.shell", DEFAULT_CONTAINER_SHELL,
+        )
+
         container_scope: ScopeConfig | None = None
         raw_container_paths = labels.get(f"{label_prefix}.container.paths", "")
         if raw_container_paths:
@@ -161,6 +174,7 @@ def discover_targets(
                 ),
                 on_start=labels.get(f"{label_prefix}.container.on_start"),
                 on_complete=labels.get(f"{label_prefix}.container.on_complete"),
+                shell=container_shell,
             )
 
         host_scope: ScopeConfig | None = None
@@ -178,12 +192,10 @@ def discover_targets(
         compose_dir = labels.get("com.docker.compose.project.working_dir")
 
         suppress_key = f"{label_prefix}.suppress-mount-warning"
-        if not container_scope and not host_scope and not compose_dir:
-            log.info(
-                "%s: no paths configured and no compose dir, skipping",
-                name,
+        if not container_scope and not host_scope:
+            raise ValueError(
+                f"{name}: backup.enable=true but no container.paths or host.paths configured"
             )
-            continue
 
         targets.append(
             ContainerTarget(

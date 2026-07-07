@@ -104,8 +104,8 @@ The password file is mounted read-only into the restic container via
 | `repository` | Yes | Restic repository path |
 | `password_file` | Yes | Path to a file containing the restic password |
 | `restic_image` | No | Docker image for restic (default: `restic/restic:latest`) |
-| `on_start` | No | Script to run before the backup starts. If it exits non-zero, the backup is aborted. |
-| `on_complete` | No | Script to run after the entire backup (`--exit-code N --logfile PATH`) |
+| `on_start` | No | Command to run before the backup starts. If it exits non-zero, the backup is aborted. |
+| `on_complete` | No | Command to run after the entire backup. Env: `$DORESTIC_EXIT_CODE`, `$DORESTIC_LOGFILE` |
 | `retention` | No | Snapshot retention policy (default: 7 daily, 4 weekly, 12 monthly) |
 | `host_groups` | No | Host-only backup groups (see below) |
 
@@ -143,20 +143,27 @@ compose project directory).
 | `backup.enable` | Yes | `"true"` to opt in |
 | `backup.container.paths` | No | Comma-separated container-internal paths to back up |
 | `backup.container.exclude` | No | Comma-separated restic exclude patterns for container scope |
-| `backup.container.on_start` | No | Shell command run inside the container before container backup (`--tag NAME`) |
-| `backup.container.on_complete` | No | Shell command run inside the container after container backup (`--exit-code N --tag NAME`) |
+| `backup.container.on_start` | No | Command run inside the container before container backup. Env: `$DORESTIC_TAG` |
+| `backup.container.on_complete` | No | Command run inside the container after container backup. Env: `$DORESTIC_TAG`, `$DORESTIC_EXIT_CODE` |
+| `backup.container.shell` | No | Shell used for container hooks (default: `sh`) |
 | `backup.host.paths` | No | Comma-separated paths relative to the compose project directory |
 | `backup.host.exclude` | No | Comma-separated restic exclude patterns for host scope |
-| `backup.host.on_start` | No | Shell command run inside the container before host backup (`--tag NAME`) |
-| `backup.host.on_complete` | No | Shell command run inside the container after host backup (`--exit-code N --tag NAME`) |
-| `backup.suppress-mount-warning` | No | `"true"` to silence warnings about unmounted paths |
+| `backup.host.on_start` | No | Command run on the host before host backup. Env: `$DORESTIC_TAG` |
+| `backup.host.on_complete` | No | Command run on the host after host backup. Env: `$DORESTIC_TAG`, `$DORESTIC_EXIT_CODE` |
+| `backup.suppress-mount-warning` | No | `"true"` to silence warnings when container paths fall back to `docker cp` (see below) |
 
 ### Container paths
 
 Paths in `backup.container.paths` are resolved to host paths by inspecting the
 container's volume mounts. The longest prefix match is used when multiple mounts
-overlap. If a path has no matching mount, it is extracted via `docker cp` to a
-staging directory (with a warning unless suppressed).
+overlap.
+
+If a path has no matching volume mount, dorestic cannot resolve it to a host
+path directly. Instead, it falls back to `docker cp` to extract the data to a
+temporary staging directory before backing it up. This is slower and uses extra
+disk space, so dorestic logs a warning when it happens. If this is intentional
+(e.g. the container stores data outside any mounted volume), set
+`backup.suppress-mount-warning` to `"true"` to silence the warning.
 
 ### Host paths and depth
 
@@ -169,14 +176,6 @@ depth:
 | `.@1` | Top-level files in the compose dir (compose file, .env, etc.) |
 | `.` | Entire compose directory, recursive |
 | `../shared-config@2` | Sibling directory, 2 levels deep |
-
-### Auto-discovered compose config
-
-Every opted-in container managed by Docker Compose automatically gets its compose
-project directory's top-level files included in the host-scope backup. This is
-equivalent to an implicit `.@1` — `docker-compose.yml`, `.env`, `Dockerfile`,
-and other config files are always backed up. These are deduplicated with any
-explicitly declared `backup.host.paths`.
 
 ## Lifecycle
 
@@ -247,8 +246,8 @@ host_groups:
 | `tag` | Yes | Restic tag for this group's snapshot |
 | `paths` | Yes | List of absolute host paths to back up |
 | `exclude` | No | List of restic exclude patterns |
-| `on_start` | No | Script to run before backup (`--tag TAG`). Failure skips the backup. |
-| `on_complete` | No | Script to run after backup (`--exit-code N --tag TAG`) |
+| `on_start` | No | Command to run before backup. Env: `$DORESTIC_TAG`. Failure skips the backup. |
+| `on_complete` | No | Command to run after backup. Env: `$DORESTIC_TAG`, `$DORESTIC_EXIT_CODE` |
 
 ## Examples
 

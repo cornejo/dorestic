@@ -14,14 +14,15 @@ password_file: /etc/backup/restic-password
 # Restic Docker image (optional, default: restic/restic:latest)
 # restic_image: restic/restic:latest
 
-# Script to run before the backup starts (optional)
+# Command to run before the backup starts (optional)
 # If it exits non-zero, the entire backup is aborted.
+# All on_start/on_complete hooks are run via sh -c.
 # on_start: /path/to/on_start.sh
 
-# Script to run after the entire backup completes (optional)
-# Called with: --exit-code N --logfile /path/to/log
+# Command to run after the entire backup completes (optional)
+# Environment: $DORESTIC_EXIT_CODE, $DORESTIC_LOGFILE
 # The log file is deleted after on_complete returns — copy or upload it
-# inside the script if you want to keep it.
+# inside the command if you want to keep it.
 # on_complete: /path/to/on_complete.sh
 
 # Snapshot retention policy (optional, these are the defaults)
@@ -45,5 +46,5 @@ password_file: /etc/backup/restic-password
 #       - /mnt/fileserver/docker
 #     exclude:
 #       - "aosp-mirror/mirror"
-#     # on_start: /path/to/pre-backup.sh     # called with: --tag TAG
-#     # on_complete: /path/to/post-backup.sh  # called with: --exit-code N --tag TAG
+#     # on_start: /path/to/pre-backup.sh     # env: $DORESTIC_TAG
+#     # on_complete: /path/to/post-backup.sh  # env: $DORESTIC_TAG, $DORESTIC_EXIT_CODE
