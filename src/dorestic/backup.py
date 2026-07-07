@@ -93,7 +93,10 @@ def backup_container(
     container_on_start_ok = True
     if target.container_scope and target.container_scope.on_start:
         log.info("  container.on_start: %s", target.container_scope.on_start)
-        code, output = run_docker_exec(target.container, target.container_scope.on_start)
+        code, output = run_docker_exec(
+            target.container, target.container_scope.on_start,
+            "--tag", target.name,
+        )
         if output:
             for line in output.splitlines():
                 log.info("    %s", line)
@@ -107,7 +110,10 @@ def backup_container(
     host_on_start_ok = True
     if target.host_scope and target.host_scope.on_start:
         log.info("  host.on_start: %s", target.host_scope.on_start)
-        code, output = run_docker_exec(target.container, target.host_scope.on_start)
+        code, output = run_docker_exec(
+            target.container, target.host_scope.on_start,
+            "--tag", target.name,
+        )
         if output:
             for line in output.splitlines():
                 log.info("    %s", line)
@@ -146,8 +152,8 @@ def backup_container(
     if target.container_scope and target.container_scope.on_complete:
         log.info("  container.on_complete: %s", target.container_scope.on_complete)
         code, output = run_docker_exec(
-            target.container,
-            f"{target.container_scope.on_complete} {container_result.exit_code}",
+            target.container, target.container_scope.on_complete,
+            "--exit-code", str(container_result.exit_code), "--tag", target.name,
         )
         if output:
             for line in output.splitlines():
@@ -158,8 +164,8 @@ def backup_container(
     if target.host_scope and target.host_scope.on_complete:
         log.info("  host.on_complete: %s", target.host_scope.on_complete)
         code, output = run_docker_exec(
-            target.container,
-            f"{target.host_scope.on_complete} {host_result.exit_code}",
+            target.container, target.host_scope.on_complete,
+            "--exit-code", str(host_result.exit_code), "--tag", target.name,
         )
         if output:
             for line in output.splitlines():
@@ -188,13 +194,13 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
 
     if group.on_start:
         log.info("  on_start: %s", group.on_start)
-        code = run_host_script(group.on_start, group.tag)
+        code = run_host_script(group.on_start, "--tag", group.tag)
         if code != 0:
             log.error("  on_start failed (exit %d), skipping backup", code)
             result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
             if group.on_complete:
                 log.info("  on_complete: %s", group.on_complete)
-                run_host_script(group.on_complete, str(result.exit_code), group.tag)
+                run_host_script(group.on_complete, "--exit-code", str(result.exit_code), "--tag", group.tag)
             return result
 
     exit_code = run_scope_backup(group.tag, resolved_paths, group.exclude, config=config)
@@ -202,7 +208,7 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
 
     if group.on_complete:
         log.info("  on_complete: %s", group.on_complete)
-        code = run_host_script(group.on_complete, str(result.exit_code), group.tag)
+        code = run_host_script(group.on_complete, "--exit-code", str(result.exit_code), "--tag", group.tag)
         if code != 0:
             log.warning("  on_complete failed (exit %d)", code)
 
@@ -240,6 +246,13 @@ def run_backup(config_path: str) -> None:
     try:
         config = load_config(config_path)
         lock_fd = acquire_lock(config)
+
+        if config.on_start:
+            log.info("Running on_start: %s", config.on_start)
+            start_code = run_host_script(config.on_start)
+            if start_code != 0:
+                log.error("on_start failed (exit %d), aborting backup", start_code)
+                sys.exit(1)
 
         log.info("=== Initializing repository if needed ===")
         init_code = run_restic("init", config=config)
@@ -302,7 +315,7 @@ def run_backup(config_path: str) -> None:
         if config.on_complete:
             log_file.flush()
             log.info("Running on_complete: %s", config.on_complete)
-            run_host_script(config.on_complete, str(overall_exit), log_path)
+            run_host_script(config.on_complete, "--exit-code", str(overall_exit), "--logfile", log_path)
 
     except SystemExit:
         raise

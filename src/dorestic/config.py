@@ -96,12 +96,14 @@ def load_config(path: str) -> BackupConfig:
             )
         )
 
+    on_start_val = data.get("on_start")
     on_complete_val = data.get("on_complete")
 
     return BackupConfig(
         repository=str(data["repository"]),
         password_file=str(data["password_file"]),
         restic_image=str(data.get("restic_image", DEFAULT_RESTIC_IMAGE)),
+        on_start=str(on_start_val) if on_start_val is not None else None,
         on_complete=str(on_complete_val) if on_complete_val is not None else None,
         retention=retention,
         host_groups=host_groups,
