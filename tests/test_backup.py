@@ -13,6 +13,10 @@ from unittest.mock import patch
 import docker
 from docker.models.containers import Container
 
+import logging
+
+import pytest
+
 from dorestic import (
     EXIT_ON_START_FAILED,
     BackupConfig,
@@ -21,6 +25,7 @@ from dorestic import (
     ScopeConfig,
     backup_container,
     backup_host_group,
+    make_restic_hostname,
     run_docker_exec,
     run_scope_backup,
 )
@@ -314,6 +319,149 @@ class TestBackupContainerLifecycle:
         finally:
             container.stop(timeout=1)
             container.remove(force=True)
+
+
+# ── per-scope logging ──────────────────────────────────────
+
+
+@requires_docker
+class TestScopeLogging:
+    def test_container_ok_logged(
+        self, test_container: tuple[Container, Path],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        container, _ = test_container
+        name = container.name or "unknown"
+        with patch("dorestic.backup.run_scope_backup", return_value=0):
+            with caplog.at_level(logging.INFO):
+                backup_container(
+                    ContainerTarget(
+                        name=name, container=container,
+                        container_scope=ScopeConfig(paths=["/data"]),
+                    ),
+                    config=DUMMY_CONFIG,
+                )
+        assert "container backup OK" in caplog.text
+
+    def test_container_failed_logged(
+        self, test_container: tuple[Container, Path],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        container, _ = test_container
+        name = container.name or "unknown"
+        with patch("dorestic.backup.run_scope_backup", return_value=1):
+            with caplog.at_level(logging.ERROR):
+                backup_container(
+                    ContainerTarget(
+                        name=name, container=container,
+                        container_scope=ScopeConfig(paths=["/data"]),
+                    ),
+                    config=DUMMY_CONFIG,
+                )
+        assert "container backup FAILED" in caplog.text
+
+    def test_host_group_ok_logged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "f.txt").write_text("x")
+        with patch("dorestic.backup.run_scope_backup", return_value=0):
+            with caplog.at_level(logging.INFO):
+                backup_host_group(
+                    HostGroup(tag="t", paths=[str(data_dir)]),
+                    config=DUMMY_CONFIG,
+                )
+        assert "backup OK" in caplog.text
+
+    def test_host_group_failed_logged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "f.txt").write_text("x")
+        with patch("dorestic.backup.run_scope_backup", return_value=1):
+            with caplog.at_level(logging.ERROR):
+                backup_host_group(
+                    HostGroup(tag="t", paths=[str(data_dir)]),
+                    config=DUMMY_CONFIG,
+                )
+        assert "backup FAILED" in caplog.text
+
+
+# ── hostname passed through ────────────────────────────────
+
+
+@requires_docker
+class TestHostnamePassthrough:
+    def test_container_scope_passes_hostname(
+        self, test_container: tuple[Container, Path],
+    ) -> None:
+        container, _ = test_container
+        name = container.name or "unknown"
+        calls: list[dict[str, Any]] = []
+
+        def mock_backup(tag: str, paths: list[Path], exclude: list[str], **kwargs: Any) -> int:
+            calls.append({"tag": tag, **kwargs})
+            return 0
+
+        with patch("dorestic.backup.run_scope_backup", side_effect=mock_backup):
+            backup_container(
+                ContainerTarget(
+                    name=name, container=container,
+                    container_scope=ScopeConfig(paths=["/data"]),
+                ),
+                config=DUMMY_CONFIG,
+            )
+
+        assert len(calls) == 1
+        assert "hostname" in calls[0]
+        assert calls[0]["hostname"] == make_restic_hostname("container", name)
+
+    def test_host_scope_passes_hostname(
+        self, test_container_multi_scope: tuple[Container, Path, Path],
+    ) -> None:
+        container, _, compose_dir = test_container_multi_scope
+        container.reload()
+        name = container.name or "unknown"
+        calls: list[dict[str, Any]] = []
+
+        def mock_backup(tag: str, paths: list[Path], exclude: list[str], **kwargs: Any) -> int:
+            calls.append({"tag": tag, **kwargs})
+            return 0
+
+        with patch("dorestic.backup.run_scope_backup", side_effect=mock_backup):
+            backup_container(
+                ContainerTarget(
+                    name=name, container=container,
+                    container_scope=ScopeConfig(paths=["/data"]),
+                    host_scope=ScopeConfig(paths=[".@1"]),
+                    compose_dir=str(compose_dir),
+                ),
+                config=DUMMY_CONFIG,
+            )
+
+        host_call = next(c for c in calls if "host" in c["tag"])
+        assert host_call["hostname"] == make_restic_hostname("host", name)
+
+    def test_host_group_passes_hostname(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "f.txt").write_text("x")
+        calls: list[dict[str, Any]] = []
+
+        def mock_backup(tag: str, paths: list[Path], exclude: list[str], **kwargs: Any) -> int:
+            calls.append({"tag": tag, **kwargs})
+            return 0
+
+        with patch("dorestic.backup.run_scope_backup", side_effect=mock_backup):
+            backup_host_group(
+                HostGroup(tag="documents", paths=[str(data_dir)]),
+                config=DUMMY_CONFIG,
+            )
+
+        assert len(calls) == 1
+        assert calls[0]["hostname"] == "dorestic-host-documents"
 
 
 # ── backup_host_group ───────────────────────────────────────

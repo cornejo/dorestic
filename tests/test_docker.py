@@ -87,6 +87,49 @@ class TestDiscoverTargets:
         target = next(t for t in targets if t.name == container.name)
         assert target.host_scope is None
 
+    def test_parses_container_shell(self, docker_client: docker.DockerClient, docker_visible_tmp: Path) -> None:
+        """backup.container.shell label is parsed into ScopeConfig.shell."""
+        data_dir = docker_visible_tmp / "shell_data"
+        data_dir.mkdir()
+        container: Container = docker_client.containers.run(
+            "alpine:latest",
+            command="sleep 3600",
+            labels={
+                f"{TEST_LABEL_PREFIX}.enable": "true",
+                f"{TEST_LABEL_PREFIX}.container.paths": "/data",
+                f"{TEST_LABEL_PREFIX}.container.shell": "/bin/bash",
+            },
+            volumes={str(data_dir): {"bind": "/data", "mode": "rw"}},
+            detach=True,
+            remove=False,
+        )
+        try:
+            targets = discover_targets(docker_client, label_prefix=TEST_LABEL_PREFIX)
+            target = next(t for t in targets if t.name == container.name)
+            assert target.container_scope is not None
+            assert target.container_scope.shell == "/bin/bash"
+        finally:
+            container.stop(timeout=1)
+            container.remove(force=True)
+
+    def test_no_paths_raises(self, docker_client: docker.DockerClient, docker_visible_tmp: Path) -> None:
+        """backup.enable=true without any paths raises ValueError."""
+        container: Container = docker_client.containers.run(
+            "alpine:latest",
+            command="sleep 3600",
+            labels={
+                f"{TEST_LABEL_PREFIX}.enable": "true",
+            },
+            detach=True,
+            remove=False,
+        )
+        try:
+            with pytest.raises(ValueError, match="no container.paths or host.paths"):
+                discover_targets(docker_client, label_prefix=TEST_LABEL_PREFIX)
+        finally:
+            container.stop(timeout=1)
+            container.remove(force=True)
+
     def test_excludes_label_typo_raises(self, docker_client: docker.DockerClient, docker_visible_tmp: Path) -> None:
         """Using 'excludes' (plural) in a Docker label raises a clear error."""
         container: Container = docker_client.containers.run(
@@ -287,3 +330,18 @@ class TestRunDockerExec:
         assert code == 0
         lines = output.splitlines()
         assert len(lines) == 2
+
+    def test_env_vars_passed(self, test_container: tuple[Container, Path]) -> None:
+        container, _ = test_container
+        code, output = run_docker_exec(
+            container, "echo $DORESTIC_TAG",
+            env={"DORESTIC_TAG": "myapp"},
+        )
+        assert code == 0
+        assert "myapp" in output
+
+    def test_custom_shell(self, test_container: tuple[Container, Path]) -> None:
+        container, _ = test_container
+        code, output = run_docker_exec(container, "echo hello", shell="ash")
+        assert code == 0
+        assert "hello" in output

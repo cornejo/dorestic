@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.0 — 2026-07-07
+
+### Added
+- Deterministic hostname per backup scope for restic incremental scan optimization
+- 26 new tests covering hooks, env vars, shell config, hostname passthrough, and scope logging
+
+### Changed
+- `forget` now groups by `host,tags` to correctly apply retention per scope
+
 ## v0.3.0 — 2026-07-07
 
 ### Changed
