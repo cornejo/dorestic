@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.4 — 2026-07-09
+
+### Changed
+- PyPI publish workflow now triggers on tag push (`v*`) instead of GitHub release
+
 ## v0.4.3 — 2026-07-09
 
 ### Added
