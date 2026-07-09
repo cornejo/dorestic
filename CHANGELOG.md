@@ -1,9 +1,13 @@
 # Changelog
 
-## v0.4.2 — 2026-07-09
+## v0.4.3 — 2026-07-09
 
 ### Added
 - GitHub Actions CI workflow running unit tests on Python 3.12 and 3.13
+
+### Fixed
+- Remove license classifier conflicting with PEP 639 `license` field
+- Use `[dependency-groups]` instead of `[project.optional-dependencies]` for dev deps
 
 ## v0.4.1 — 2026-07-09
 
