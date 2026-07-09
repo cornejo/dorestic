@@ -4,12 +4,36 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dorestic"
-version = "0.4.0"
+version = "0.4.1"
+description = "A label-driven backup system for Docker containers using restic"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [
+    { name = "Eddie Cornejo" },
+]
+readme = "README.md"
+keywords = ["backup", "docker", "restic", "containers"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Archiving :: Backup",
+]
 dependencies = [
     "docker>=7.0,<8.0",
     "pyyaml>=6.0,<7.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/cornejo/dorestic"
+Repository = "https://github.com/cornejo/dorestic"
+Issues = "https://github.com/cornejo/dorestic/issues"
+Changelog = "https://github.com/cornejo/dorestic/blob/main/CHANGELOG.md"
+Funding = "https://ko-fi.com/rdacted"
 
 [project.optional-dependencies]
 dev = [
