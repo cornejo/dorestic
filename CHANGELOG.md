@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.1 — 2026-07-09
+
+### Added
+- PyPI project metadata (description, license, authors, classifiers, keywords, URLs)
+- Apache 2.0 LICENSE file
+- GitHub Actions workflow for automated PyPI publishing via trusted publishers
+- GitHub FUNDING.yml for Ko-fi and Buy Me a Coffee sponsor links
+
 ## v0.4.0 — 2026-07-07
 
 ### Added
