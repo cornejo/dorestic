@@ -14,10 +14,10 @@ no Docker socket and can only read the specific paths mounted into it.
 uv tool install dorestic
 ```
 
-Or directly from a git repository:
+Or with pip:
 
 ```bash
-uv tool install git+https://github.com/USER/dorestic.git
+pip install dorestic
 ```
 
 ## Quick Start
@@ -82,6 +82,24 @@ uv tool install git+https://github.com/USER/dorestic.git
    0 3 * * * dorestic backup
    ```
 
+## CLI Reference
+
+```
+dorestic backup                 Run a full backup (all containers + host groups)
+dorestic backup --only <name>   Back up a single container or host group
+dorestic backup --dry-run       Show what would be backed up without running anything
+dorestic backup -v              Verbose output (debug-level: paths, restic commands)
+dorestic backup -q              Quiet mode (suppress output on success, print on failure)
+dorestic list                   Show snapshots grouped by tag with freshness
+dorestic list --tag <tag>       Show individual snapshots for a specific tag
+dorestic view <id|tag>          Show files in a snapshot (or latest for a tag)
+dorestic init [PATH]            Write example config to PATH (default: ./)
+dorestic init --refresh         Refresh existing config with latest template
+```
+
+Global flags: `--config`/`-c` to specify config path explicitly.
+`-v` and `-q` are mutually exclusive.
+
 ## Configuration
 
 Config is loaded from the first location found:
@@ -93,6 +111,16 @@ Or pass a path explicitly: `dorestic --config /path/to/config.yml backup`
 
 Run `dorestic init [PATH]` to write an example config with documentation.
 
+To update an existing config with the latest template (preserving your values,
+adding documentation for new options):
+
+```bash
+dorestic init --refresh
+```
+
+This validates all keys (errors on anything unknown/removed), writes the new
+config with your values, and saves the old file as `.bak`.
+
 ```yaml
 repository: /mnt/backup/backup1
 password_file: /etc/backup/restic-password
@@ -100,6 +128,7 @@ password_file: /etc/backup/restic-password
 # restic_image: restic/restic:latest
 # on_start: /path/to/on_start.sh
 # on_complete: /path/to/on_complete.sh
+# log_dir: /var/log/dorestic
 
 # retention:
 #   daily: 7
@@ -124,6 +153,7 @@ The password file is mounted read-only into the restic container via
 | `on_start` | No | Command to run before the backup starts. If it exits non-zero, the backup is aborted. |
 | `on_complete` | No | Command to run after the entire backup. Env: `$DORESTIC_EXIT_CODE`, `$DORESTIC_LOGFILE` |
 | `retention` | No | Snapshot retention policy (default: 7 daily, 4 weekly, 12 monthly) |
+| `log_dir` | No | Directory for persistent backup logs. Each run writes a timestamped file. Without this, a temp log is created for `on_complete` and then deleted. |
 | `stale_threshold_hours` | No | Hours after which `dorestic list` flags a tag as stale (default: 25) |
 | `host_groups` | No | Host-only backup groups (see below) |
 
@@ -329,6 +359,38 @@ services:
       backup.host.paths: ".@1"
 ```
 
+### Dry run
+
+Use `--dry-run` to see what would be backed up without running any hooks or
+restic commands. Useful when setting up labels on new containers:
+
+```bash
+dorestic backup --dry-run
+```
+
+```
+my-db
+  container (my-db:container)
+    /srv/docker/my-db/pgdata
+    exclude: *.log
+    on_start: pg_dumpall -U postgres --clean > /var/lib/postgresql/data/dump.sql
+    on_complete: rm -f /var/lib/postgresql/data/dump.sql
+  host (my-db:host)
+    /srv/docker/my-db/docker-compose.yml
+    /srv/docker/my-db/.env
+
+host:documents
+  /mnt/fileserver/share
+  /mnt/fileserver/share-private
+  exclude: *.tmp
+```
+
+Combine with `--only` to check a single container:
+
+```bash
+dorestic backup --dry-run --only my-db
+```
+
 ### Exclude pattern tips
 
 - Patterns use restic's native `--exclude` syntax, interpreted relative to the
@@ -337,6 +399,50 @@ services:
   never affects the container scope or other containers.
 - Do **not** compress or encrypt files before handing them to restic. Restic
   already does both, and pre-processed data destroys chunk-level deduplication.
+
+## Library Usage
+
+dorestic can be imported and used as a library from other Python projects:
+
+```python
+from dorestic import Dorestic
+
+# From a config file
+d = Dorestic.from_config_path("/path/to/config.yml")
+
+# Or auto-discover config (./config.yml or XDG path)
+d = Dorestic.from_default_config()
+
+# List all snapshots (returns typed Snapshot objects)
+for snap in d.list_snapshots():
+    print(f"{snap.short_id}  {snap.tags}  {snap.time}")
+
+# Filter by tag
+db_snaps = d.list_snapshots(tag="my-db:container")
+
+# Resolve a snapshot by ID or tag (latest for tag)
+snap = d.resolve_snapshot("my-db:container")
+
+# View files in a snapshot (streams, constant memory)
+if snap:
+    for f in d.iter_snapshot_files(snap.id):
+        print(f"{f.path}  ({f.size} bytes)")
+
+# Dry run — see what would be backed up
+plan = d.dry_run()
+for target in plan.targets:
+    print(f"{target.name}: {target.container_scope}, {target.host_scope}")
+
+# Run a backup (acquires lock, raises RuntimeError if locked)
+result = d.backup()
+print(f"Success: {result.success}")
+
+# Target a single container or host group
+result = d.backup(only="my-db")
+```
+
+All methods return typed dataclasses (`Snapshot`, `SnapshotFile`, `BackupResult`)
+instead of raw dicts or exit codes. Nothing in the library path calls `sys.exit`.
 
 ## Dependencies
 
@@ -365,11 +471,12 @@ dorestic/
 ├── src/dorestic/
 │   ├── __init__.py          # Public API re-exports
 │   ├── __main__.py          # Entry point for python -m dorestic
+│   ├── api.py               # Dorestic class (library interface)
 │   ├── cli.py               # CLI subcommands (backup, list, view, init)
 │   ├── display.py           # Formatting and display helpers
-│   ├── models.py            # Dataclasses and constants
+│   ├── models.py            # Dataclasses and constants (Snapshot, BackupResult, etc.)
 │   ├── config.py            # Config file loading and validation
-│   ├── config.yml.example   # Bundled example config (used by --init)
+│   ├── config.yml.example   # Bundled example config (used by init)
 │   ├── restic.py            # Restic container invocation
 │   ├── docker.py            # Docker container operations
 │   ├── paths.py             # Path resolution utilities

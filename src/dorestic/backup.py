@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import io
 import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from io import TextIOBase
 from pathlib import Path
 from typing import IO
@@ -23,6 +25,9 @@ from dorestic.docker import (
 from dorestic.models import (
     BackupConfig,
     ContainerTarget,
+    DryRunPlan,
+    DryRunScope,
+    DryRunTarget,
     EXIT_ON_START_FAILED,
     HostGroup,
     ScopeResult,
@@ -225,6 +230,72 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
     return result
 
 
+def plan_backup(
+    config: BackupConfig,
+    only: str | None = None,
+) -> DryRunPlan:
+    client = docker.DockerClient.from_env()
+    targets = discover_targets(client)
+
+    if only is not None:
+        targets = [t for t in targets if t.name == only]
+
+    dry_targets: list[DryRunTarget] = []
+    for target in targets:
+        container_scope = None
+        if target.container_scope:
+            paths = resolve_container_paths(target, staging_dir=None)
+            container_scope = DryRunScope(
+                tag=f"{target.name}:container",
+                paths=[str(p) for p in paths],
+                exclude=target.container_scope.exclude,
+                on_start=target.container_scope.on_start,
+                on_complete=target.container_scope.on_complete,
+            )
+
+        host_scope = None
+        if target.host_scope:
+            paths = resolve_host_paths(target)
+            host_scope = DryRunScope(
+                tag=f"{target.name}:host",
+                paths=[str(p) for p in paths],
+                exclude=target.host_scope.exclude,
+                on_start=target.host_scope.on_start,
+                on_complete=target.host_scope.on_complete,
+            )
+
+        dry_targets.append(DryRunTarget(
+            name=target.name,
+            container_scope=container_scope,
+            host_scope=host_scope,
+        ))
+
+    host_groups = config.host_groups
+    if only is not None:
+        host_groups = [g for g in host_groups if g.tag == only]
+
+    dry_groups: list[DryRunScope] = []
+    for group in host_groups:
+        resolved = [p for p in group.paths if Path(p).exists()]
+        missing = [p for p in group.paths if not Path(p).exists()]
+        for p in missing:
+            log.warning("host path %s does not exist", p)
+        dry_groups.append(DryRunScope(
+            tag=group.tag,
+            paths=resolved,
+            exclude=group.exclude,
+            on_start=group.on_start,
+            on_complete=group.on_complete,
+        ))
+
+    return DryRunPlan(
+        targets=dry_targets,
+        host_groups=dry_groups,
+        global_on_start=config.on_start if only is None else None,
+        global_on_complete=config.on_complete if only is None else None,
+    )
+
+
 def _init_repo(config: BackupConfig) -> None:
     log.info("=== Initializing repository if needed ===")
     init_code, init_stdout, init_stderr = run_restic("init", config=config, capture=True)
@@ -331,24 +402,54 @@ def orchestrate_backup(
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-def run_backup(config_path: str, only: str | None = None) -> None:
+def make_log_path(config: BackupConfig) -> tuple[str, bool]:
+    """Return (log_path, persistent).
+
+    If config.log_dir is set, create a timestamped file there (persistent=True).
+    Otherwise create a temp file that will be deleted after on_complete (persistent=False).
+    """
+    if config.log_dir:
+        log_dir = Path(config.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H%M%S")
+        path = log_dir / f"backup-{timestamp}.log"
+        return str(path), True
+    fd = tempfile.NamedTemporaryFile(
+        mode="w", prefix="backup-", suffix=".log", delete=False,
+    )
+    fd.close()
+    return fd.name, False
+
+
+def run_backup(
+    config_path: str,
+    only: str | None = None,
+    verbose: bool = False,
+    quiet: bool = False,
+) -> None:
+    log_level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    log_file = tempfile.NamedTemporaryFile(
-        mode="w", prefix="backup-", suffix=".log", delete=False
-    )
-    log_path = log_file.name
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
     overall_exit = 1
     lock_fd: IO[str] | None = None
+    config = load_config(config_path)
+    log_path, persistent = make_log_path(config)
+    log_file = open(log_path, "w")
 
-    tee_stdout = TeeStream(original_stdout, log_file)
-    tee_stderr = TeeStream(original_stderr, log_file)
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+
+    if quiet:
+        buffer = io.StringIO()
+        tee_stdout = TeeStream(buffer, log_file)
+        tee_stderr = TeeStream(buffer, log_file)
+    else:
+        tee_stdout = TeeStream(original_stdout, log_file)
+        tee_stderr = TeeStream(original_stderr, log_file)
 
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
@@ -359,7 +460,6 @@ def run_backup(config_path: str, only: str | None = None) -> None:
     sys.stderr = tee_stderr  # type: ignore[assignment]
 
     try:
-        config = load_config(config_path)
         lock_fd = acquire_lock(config)
         log_file.flush()
         overall_exit = orchestrate_backup(config, only=only, log_path=log_path)
@@ -376,8 +476,13 @@ def run_backup(config_path: str, only: str | None = None) -> None:
                 handler.stream = original_stderr
         if not log_file.closed:
             log_file.close()
-        os.unlink(log_path)
+        if not persistent:
+            os.unlink(log_path)
         if lock_fd is not None:
             lock_fd.close()
+
+    if quiet and overall_exit != 0:
+        assert isinstance(tee_stdout.original, io.StringIO)
+        original_stderr.write(tee_stdout.original.getvalue())
 
     sys.exit(overall_exit)

@@ -3,22 +3,30 @@
 ## v0.5.0 — 2026-07-09
 
 ### Added
+- `Dorestic` class — first-class library interface for importing dorestic from other Python projects
+- Typed models: `Snapshot`, `SnapshotFile`, `BackupResult` replace raw dicts and exit codes
+- `dorestic init --refresh` — refresh existing config with latest template, validating all keys and preserving values (old config saved as `.bak`)
 - `dorestic list` — show snapshots grouped by tag with freshness and staleness markers
 - `dorestic list --tag <tag>` — show individual snapshots for a specific tag
 - `dorestic view <snapshot|tag>` — show files in a snapshot or latest for a tag
 - `dorestic backup --only <name>` — back up a single container or host group (skips global hooks, prune, and check)
+- `dorestic backup --dry-run` — show what would be backed up without running hooks or restic
+- `dorestic backup -v` — verbose/debug output (resolved paths, mount mappings, restic commands)
+- `dorestic backup -q` — quiet mode (suppress output on success, print everything on failure)
+- `log_dir` config option — directory for persistent timestamped backup logs; without it, a temp log is created for `on_complete` and then deleted
 - `stale_threshold_hours` config option (default: 25) for controlling staleness markers in `list` output
 - `--config` / `-c` top-level flag to specify config path explicitly
-- New `display.py` module for formatting and display helpers
+- New `api.py` and `display.py` modules
 
 ### Changed
+- CLI commands (`list`, `view`) now use `Dorestic` class internally — CLI is a thin layer over the library
 - `_resolve_snapshot` now uses O(n) single-pass algorithm instead of O(n^2)
-- `_resolve_snapshot` calls `list_snapshots` directly instead of accepting an untyped callback
-- `acquire_lock` raises `RuntimeError` instead of calling `sys.exit(1)`, consistent with `_init_repo`
+- `acquire_lock` raises `RuntimeError` instead of calling `sys.exit(1)` — nothing in the library path calls `sys.exit`
 - `backup_host_group` uses flag-based flow instead of early return, eliminating duplicated `on_complete` hook call
 - `iter_snapshot_files` uses proper `if` guards instead of `assert` for stdout/stderr checks
 - `restic snapshots --json` output parsed with stdout/stderr kept separate to prevent JSON corruption from warnings
 - `iter_snapshot_files` streams JSONL via `subprocess.Popen` for constant memory usage
+- `parse_snapshot_time` moved from `display` to `models` (co-located with `Snapshot.from_restic`)
 - Fixed stale help text in `config.py` (`dorestic --init` → `dorestic init`)
 
 ## v0.4.4 — 2026-07-09

@@ -91,6 +91,7 @@ def run_restic(
                 mounted.add(path_str)
 
     cmd.extend([config.restic_image, *args])
+    log.debug("restic command: %s", " ".join(cmd))
     if capture:
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.returncode, result.stdout.strip(), result.stderr.strip()

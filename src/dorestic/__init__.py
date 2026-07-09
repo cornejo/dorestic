@@ -1,18 +1,27 @@
+from dorestic.api import Dorestic as Dorestic
 from dorestic.backup import (
     TeeStream as TeeStream,
     acquire_lock as acquire_lock,
     backup_container as backup_container,
     backup_host_group as backup_host_group,
+    make_log_path as make_log_path,
     orchestrate_backup as orchestrate_backup,
+    plan_backup as plan_backup,
     run_backup as run_backup,
     run_hook as run_hook,
 )
-from dorestic.config import find_config as find_config, load_config as load_config
+from dorestic.config import (
+    find_config as find_config,
+    load_config as load_config,
+    refresh_config as refresh_config,
+    render_config as render_config,
+    validate_raw_config as validate_raw_config,
+)
 from dorestic.display import (
     format_freshness as format_freshness,
     format_size as format_size,
     is_stale as is_stale,
-    parse_snapshot_time as parse_snapshot_time,
+    print_dry_run_plan as print_dry_run_plan,
     print_tag_detail as print_tag_detail,
     print_tag_summary as print_tag_summary,
 )
@@ -30,11 +39,18 @@ from dorestic.models import (
     DEFAULT_STALE_THRESHOLD_HOURS as DEFAULT_STALE_THRESHOLD_HOURS,
     EXIT_ON_START_FAILED as EXIT_ON_START_FAILED,
     BackupConfig as BackupConfig,
+    BackupResult as BackupResult,
     ContainerTarget as ContainerTarget,
+    DryRunPlan as DryRunPlan,
+    DryRunScope as DryRunScope,
+    DryRunTarget as DryRunTarget,
     HostGroup as HostGroup,
     RetentionPolicy as RetentionPolicy,
+    Snapshot as Snapshot,
+    SnapshotFile as SnapshotFile,
     ScopeConfig as ScopeConfig,
     ScopeResult as ScopeResult,
+    parse_snapshot_time as parse_snapshot_time,
 )
 from dorestic.paths import (
     expand_depth_limited_path as expand_depth_limited_path,

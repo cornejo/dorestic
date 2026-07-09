@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime
 
-from dorestic.models import BackupConfig
+from dorestic.models import BackupConfig, DryRunPlan, DryRunScope, Snapshot
 
 
 def format_freshness(dt: datetime, now: datetime) -> str:
@@ -32,16 +31,6 @@ def is_stale(dt: datetime, now: datetime, threshold_hours: int) -> bool:
     return hours_ago >= threshold_hours
 
 
-def parse_snapshot_time(time_str: str) -> datetime:
-    cleaned = time_str.rstrip("Z")
-    if "." in cleaned:
-        base, frac = cleaned.rsplit(".", 1)
-        frac = frac[:6]
-        cleaned = f"{base}.{frac}"
-        return datetime.fromisoformat(cleaned).replace(tzinfo=timezone.utc)
-    return datetime.fromisoformat(cleaned).replace(tzinfo=timezone.utc)
-
-
 def format_size(size_bytes: int) -> str:
     if size_bytes < 1024:
         return f"{size_bytes} B"
@@ -52,19 +41,61 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024 * 1024):.1f} GiB"
 
 
+def _print_scope(scope: DryRunScope, indent: str = "  ") -> None:
+    if scope.paths:
+        for p in scope.paths:
+            print(f"{indent}{p}")
+    else:
+        print(f"{indent}(no paths resolved)")
+    if scope.exclude:
+        print(f"{indent}exclude: {', '.join(scope.exclude)}")
+    if scope.on_start:
+        print(f"{indent}on_start: {scope.on_start}")
+    if scope.on_complete:
+        print(f"{indent}on_complete: {scope.on_complete}")
+
+
+def print_dry_run_plan(plan: DryRunPlan) -> None:
+    if plan.global_on_start:
+        print(f"global on_start: {plan.global_on_start}")
+    if plan.global_on_complete:
+        print(f"global on_complete: {plan.global_on_complete}")
+    if plan.global_on_start or plan.global_on_complete:
+        print()
+
+    if not plan.targets and not plan.host_groups:
+        print("Nothing to back up.")
+        return
+
+    for target in plan.targets:
+        print(target.name)
+        if target.container_scope:
+            print(f"  container ({target.container_scope.tag})")
+            _print_scope(target.container_scope, indent="    ")
+        if target.host_scope:
+            print(f"  host ({target.host_scope.tag})")
+            _print_scope(target.host_scope, indent="    ")
+        print()
+
+    for group in plan.host_groups:
+        print(f"host:{group.tag}")
+        _print_scope(group)
+        print()
+
+
 def print_tag_summary(
-    snapshots: list[dict[str, Any]], now: datetime, config: BackupConfig,
+    snapshots: list[Snapshot], now: datetime, config: BackupConfig,
 ) -> None:
-    by_tag: dict[str, list[dict[str, Any]]] = {}
+    by_tag: dict[str, list[Snapshot]] = {}
     for snap in snapshots:
-        tags = snap.get("tags") or ["(untagged)"]
+        tags = snap.tags or ["(untagged)"]
         for tag in tags:
             by_tag.setdefault(tag, []).append(snap)
 
     rows: list[tuple[str, int, datetime, str, bool]] = []
     for tag in sorted(by_tag):
         snaps = by_tag[tag]
-        latest_time = max(parse_snapshot_time(s["time"]) for s in snaps)
+        latest_time = max(s.time for s in snaps)
         freshness = format_freshness(latest_time, now)
         stale = is_stale(latest_time, now, config.stale_threshold_hours)
         rows.append((tag, len(snaps), latest_time, freshness, stale))
@@ -91,21 +122,17 @@ def print_tag_summary(
 
 
 def print_tag_detail(
-    snapshots: list[dict[str, Any]], now: datetime, config: BackupConfig,
+    snapshots: list[Snapshot], now: datetime, config: BackupConfig,
 ) -> None:
-    sorted_snaps = sorted(
-        snapshots, key=lambda s: s["time"], reverse=True,
-    )
+    sorted_snaps = sorted(snapshots, key=lambda s: s.time, reverse=True)
 
     rows: list[tuple[str, str, str, str, bool]] = []
     for snap in sorted_snaps:
-        snap_id = snap["short_id"] if "short_id" in snap else snap["id"][:8]
-        snap_time = parse_snapshot_time(snap["time"])
-        time_str = snap_time.strftime("%Y-%m-%d %H:%M:%S")
-        freshness = format_freshness(snap_time, now)
-        stale = is_stale(snap_time, now, config.stale_threshold_hours)
-        paths_str = ", ".join(snap.get("paths", []))
-        rows.append((snap_id, time_str, freshness, paths_str, stale))
+        time_str = snap.time.strftime("%Y-%m-%d %H:%M:%S")
+        freshness = format_freshness(snap.time, now)
+        stale = is_stale(snap.time, now, config.stale_threshold_hours)
+        paths_str = ", ".join(snap.paths)
+        rows.append((snap.short_id, time_str, freshness, paths_str, stale))
 
     id_w = max(len(r[0]) for r in rows)
     id_w = max(id_w, 2)
