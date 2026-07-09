@@ -34,7 +34,7 @@ Issues = "https://github.com/cornejo/dorestic/issues"
 Changelog = "https://github.com/cornejo/dorestic/blob/main/CHANGELOG.md"
 Funding = "https://ko-fi.com/rdacted"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0",
 ]
