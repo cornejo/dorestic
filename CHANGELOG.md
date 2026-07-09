@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.2 — 2026-07-09
+
+### Added
+- GitHub Actions CI workflow running unit tests on Python 3.12 and 3.13
+
 ## v0.4.1 — 2026-07-09
 
 ### Added
