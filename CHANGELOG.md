@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.5.0 — 2026-07-09
+
+### Added
+- `dorestic list` — show snapshots grouped by tag with freshness and staleness markers
+- `dorestic list --tag <tag>` — show individual snapshots for a specific tag
+- `dorestic view <snapshot|tag>` — show files in a snapshot or latest for a tag
+- `dorestic backup --only <name>` — back up a single container or host group (skips global hooks, prune, and check)
+- `stale_threshold_hours` config option (default: 25) for controlling staleness markers in `list` output
+- `--config` / `-c` top-level flag to specify config path explicitly
+- New `display.py` module for formatting and display helpers
+
+### Changed
+- `_resolve_snapshot` now uses O(n) single-pass algorithm instead of O(n^2)
+- `_resolve_snapshot` calls `list_snapshots` directly instead of accepting an untyped callback
+- `acquire_lock` raises `RuntimeError` instead of calling `sys.exit(1)`, consistent with `_init_repo`
+- `backup_host_group` uses flag-based flow instead of early return, eliminating duplicated `on_complete` hook call
+- `iter_snapshot_files` uses proper `if` guards instead of `assert` for stdout/stderr checks
+- `restic snapshots --json` output parsed with stdout/stderr kept separate to prevent JSON corruption from warnings
+- `iter_snapshot_files` streams JSONL via `subprocess.Popen` for constant memory usage
+- Fixed stale help text in `config.py` (`dorestic --init` → `dorestic init`)
+
 ## v0.4.4 — 2026-07-09
 
 ### Changed

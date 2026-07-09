@@ -25,7 +25,7 @@ uv tool install git+https://github.com/USER/dorestic.git
 1. Generate an example config:
 
    ```bash
-   dorestic --init ~/.config/dorestic/
+   dorestic init ~/.config/dorestic/
    ```
 
    Edit `~/.config/dorestic/config.yml` and set `repository` and `password_file`.
@@ -36,6 +36,11 @@ uv tool install git+https://github.com/USER/dorestic.git
    echo -n 'your-restic-password' > /etc/backup/restic-password
    chmod 600 /etc/backup/restic-password
    ```
+
+   **Important:** Save this password securely (e.g. in a password manager or
+   secrets vault). dorestic passes the password file to restic but does not
+   store or manage the password itself. If you lose it, your restic repository
+   is unrecoverable.
 
 3. Add labels to any container you want backed up:
 
@@ -56,13 +61,25 @@ uv tool install git+https://github.com/USER/dorestic.git
 4. Run a backup:
 
    ```bash
-   dorestic
+   dorestic backup
    ```
 
-5. (Optional) Add to cron:
+   Or back up a single container or host group:
+
+   ```bash
+   dorestic backup --only my-db
+   ```
+
+5. Check what's been backed up:
+
+   ```bash
+   dorestic list
+   ```
+
+6. (Optional) Add to cron:
 
    ```
-   0 3 * * * dorestic
+   0 3 * * * dorestic backup
    ```
 
 ## Configuration
@@ -72,9 +89,9 @@ Config is loaded from the first location found:
 1. `./config.yml` (current directory)
 2. `$XDG_CONFIG_HOME/dorestic/config.yml` (default: `~/.config/dorestic/config.yml`)
 
-Or pass a path explicitly: `dorestic /path/to/config.yml`
+Or pass a path explicitly: `dorestic --config /path/to/config.yml backup`
 
-Run `dorestic --init [PATH]` to write an example config with documentation.
+Run `dorestic init [PATH]` to write an example config with documentation.
 
 ```yaml
 repository: /mnt/backup/backup1
@@ -107,6 +124,7 @@ The password file is mounted read-only into the restic container via
 | `on_start` | No | Command to run before the backup starts. If it exits non-zero, the backup is aborted. |
 | `on_complete` | No | Command to run after the entire backup. Env: `$DORESTIC_EXIT_CODE`, `$DORESTIC_LOGFILE` |
 | `retention` | No | Snapshot retention policy (default: 7 daily, 4 weekly, 12 monthly) |
+| `stale_threshold_hours` | No | Hours after which `dorestic list` flags a tag as stale (default: 25) |
 | `host_groups` | No | Host-only backup groups (see below) |
 
 ## Architecture
@@ -201,17 +219,42 @@ Each container gets up to two tagged restic snapshots per run:
 - `<name>:container` — container-internal paths (resolved to host via mounts)
 - `<name>:host` — host/compose directory paths
 
+### Listing snapshots
+
 ```bash
-# List all snapshots
-restic snapshots
+# Summary of all tags with freshness
+dorestic list
 
-# List snapshots for a specific container scope
-restic snapshots --tag my-db:container
+# TAG                    SNAPS  LATEST               FRESHNESS
+# -----------------------------------------------------------
+# my-db:container            5  2026-07-09 02:00:00  9h ago
+# my-db:host                 5  2026-07-09 02:00:00  9h ago
+# documents                  3  2026-07-07 02:00:00  2d ago (!)
+```
 
-# List host-scope snapshots
-restic snapshots --tag my-db:host
+Tags whose latest snapshot exceeds `stale_threshold_hours` (default: 25) are
+flagged with `(!)`.
 
-# Restore a specific scope
+```bash
+# Show individual snapshots for a specific tag
+dorestic list --tag my-db:container
+```
+
+### Viewing snapshot contents
+
+```bash
+# View files in a specific snapshot by ID
+dorestic view abc123de
+
+# View files in the latest snapshot for a tag
+dorestic view my-db:container
+```
+
+### Restoring
+
+Restore is done directly via restic:
+
+```bash
 restic restore --tag my-db:container latest --target /tmp/restore/
 ```
 
@@ -322,7 +365,8 @@ dorestic/
 ├── src/dorestic/
 │   ├── __init__.py          # Public API re-exports
 │   ├── __main__.py          # Entry point for python -m dorestic
-│   ├── cli.py               # Argument parsing and --init
+│   ├── cli.py               # CLI subcommands (backup, list, view, init)
+│   ├── display.py           # Formatting and display helpers
 │   ├── models.py            # Dataclasses and constants
 │   ├── config.py            # Config file loading and validation
 │   ├── config.yml.example   # Bundled example config (used by --init)

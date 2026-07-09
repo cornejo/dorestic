@@ -53,6 +53,9 @@ class RetentionPolicy:
     monthly: int = 12
 
 
+DEFAULT_STALE_THRESHOLD_HOURS = 25
+
+
 @dataclass
 class BackupConfig:
     repository: str
@@ -62,3 +65,4 @@ class BackupConfig:
     on_complete: str | None = None
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
     host_groups: list[HostGroup] = field(default_factory=lambda: list[HostGroup]())
+    stale_threshold_hours: int = DEFAULT_STALE_THRESHOLD_HOURS

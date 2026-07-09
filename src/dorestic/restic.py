@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import subprocess
+from collections.abc import Generator
 from pathlib import Path
-from typing import Literal, overload
+from typing import Any, Literal, overload
 
 from dorestic.models import BackupConfig
 
@@ -27,6 +29,19 @@ def make_restic_hostname(scope: str, tag: str) -> str:
     return f"{prefix}-{suffix}"
 
 
+def _build_restic_cmd(config: BackupConfig) -> list[str]:
+    password_mount = "/run/secrets/restic-password"
+    cmd: list[str] = [
+        "docker", "run", "--rm",
+        "-e", f"RESTIC_REPOSITORY={config.repository}",
+        "-e", f"RESTIC_PASSWORD_FILE={password_mount}",
+        "-v", f"{config.password_file}:{password_mount}:ro",
+    ]
+    if Path(config.repository).is_absolute():
+        cmd.extend(["-v", f"{config.repository}:{config.repository}"])
+    return cmd
+
+
 @overload
 def run_restic(
     *args: str,
@@ -44,7 +59,7 @@ def run_restic(
     mount_paths: list[Path] | None = None,
     hostname: str | None = None,
     capture: Literal[True],
-) -> tuple[int, str]: ...
+) -> tuple[int, str, str]: ...
 
 
 def run_restic(
@@ -53,28 +68,19 @@ def run_restic(
     mount_paths: list[Path] | None = None,
     hostname: str | None = None,
     capture: bool = False,
-) -> int | tuple[int, str]:
+) -> int | tuple[int, str, str]:
     """Run a restic command inside a container (--rm).
 
     The password file is mounted into the container and referenced via
     RESTIC_PASSWORD_FILE — nothing sensitive appears on the command line.
 
-    If capture is True, returns (exit_code, combined_output) instead of
+    If capture is True, returns (exit_code, stdout, stderr) instead of
     just exit_code.
     """
-    password_mount = "/run/secrets/restic-password"
-    cmd: list[str] = [
-        "docker", "run", "--rm",
-        "-e", f"RESTIC_REPOSITORY={config.repository}",
-        "-e", f"RESTIC_PASSWORD_FILE={password_mount}",
-        "-v", f"{config.password_file}:{password_mount}:ro",
-    ]
+    cmd = _build_restic_cmd(config)
 
     if hostname:
         cmd.extend(["-h", hostname])
-
-    if Path(config.repository).is_absolute():
-        cmd.extend(["-v", f"{config.repository}:{config.repository}"])
 
     if mount_paths:
         mounted: set[str] = set()
@@ -87,9 +93,56 @@ def run_restic(
     cmd.extend([config.restic_image, *args])
     if capture:
         result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode, (result.stdout + result.stderr).strip()
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
     result = subprocess.run(cmd)
     return result.returncode
+
+
+def list_snapshots(
+    config: BackupConfig, tag: str | None = None,
+) -> list[dict[str, Any]]:
+    args = ["snapshots", "--json"]
+    if tag:
+        args.extend(["--tag", tag])
+    exit_code, stdout, stderr = run_restic(*args, config=config, capture=True)
+    if exit_code != 0:
+        raise RuntimeError(
+            f"restic snapshots failed (exit {exit_code}): {stderr}"
+        )
+    if not stdout.strip():
+        return []
+    parsed = json.loads(stdout)
+    if parsed is None:
+        return []
+    snapshots: list[dict[str, Any]] = parsed
+    return snapshots
+
+
+def iter_snapshot_files(
+    config: BackupConfig, snapshot_id: str,
+) -> Generator[dict[str, Any], None, None]:
+    cmd = _build_restic_cmd(config)
+    cmd.extend([config.restic_image, "ls", "--json", snapshot_id])
+    with subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) as proc:
+        if proc.stdout is None:
+            raise RuntimeError("Failed to capture stdout from restic ls")
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if obj.get("struct_type") == "node":
+                yield obj
+        if proc.stderr is None:
+            raise RuntimeError("Failed to capture stderr from restic ls")
+        stderr = proc.stderr.read()
+        exit_code = proc.wait()
+    if exit_code != 0:
+        raise RuntimeError(
+            f"restic ls failed (exit {exit_code}): {stderr.strip()}"
+        )
 
 
 def run_scope_backup(

@@ -31,6 +31,10 @@ password_file: /etc/backup/restic-password
 #   weekly: 4
 #   monthly: 12
 
+# Hours after which a tag's latest snapshot is considered stale (optional, default: 25)
+# Used by `dorestic list` to flag tags that haven't been backed up recently.
+# stale_threshold_hours: 25
+
 # Host-only backup groups — not tied to any Docker container (optional)
 # Each group gets its own tagged restic snapshot.
 # host_groups:

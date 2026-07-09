@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import yaml
 
 from dorestic import (
     DEFAULT_CONTAINER_SHELL,
+    DEFAULT_STALE_THRESHOLD_HOURS,
     EXIT_ON_START_FAILED,
     BackupConfig,
     HostGroup,
@@ -26,6 +28,12 @@ from dorestic import (
     run_hook,
 )
 from dorestic.cli import write_example_config
+from dorestic.display import (
+    format_freshness,
+    format_size,
+    is_stale,
+    parse_snapshot_time,
+)
 
 
 # ── parse_comma_list ────────────────────────────────────────
@@ -279,7 +287,7 @@ class TestAcquireLock:
         config = self._make_config()
         fd1 = acquire_lock(config)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(RuntimeError, match="Another backup is already running"):
             acquire_lock(config)
 
         fd1.close()
@@ -576,3 +584,145 @@ class TestCliInit:
 
         with pytest.raises(SystemExit):
             write_example_config(str(tmp_path))
+
+
+# ── format_freshness ─────────────────────────────────────
+
+
+class TestFormatFreshness:
+    def _now(self) -> datetime:
+        return datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_just_now(self) -> None:
+        now = self._now()
+        assert format_freshness(now, now) == "just now"
+
+    def test_minutes(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 9, 11, 45, 0, tzinfo=timezone.utc)
+        assert format_freshness(dt, now) == "15m ago"
+
+    def test_hours(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 9, 6, 0, 0, tzinfo=timezone.utc)
+        assert format_freshness(dt, now) == "6h ago"
+
+    def test_one_day(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        assert format_freshness(dt, now) == "1d ago"
+
+    def test_multiple_days(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        assert format_freshness(dt, now) == "3d ago"
+
+    def test_future_shows_just_now(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 9, 13, 0, 0, tzinfo=timezone.utc)
+        assert format_freshness(dt, now) == "just now"
+
+
+# ── is_stale ─────────────────────────────────────────────
+
+
+class TestIsStale:
+    def _now(self) -> datetime:
+        return datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_within_threshold(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 9, 2, 0, 0, tzinfo=timezone.utc)
+        assert is_stale(dt, now, 25) is False
+
+    def test_at_threshold(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 8, 11, 0, 0, tzinfo=timezone.utc)
+        assert is_stale(dt, now, 25) is True
+
+    def test_beyond_threshold(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+        assert is_stale(dt, now, 25) is True
+
+    def test_custom_threshold(self) -> None:
+        now = self._now()
+        dt = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        assert is_stale(dt, now, 48) is False
+        assert is_stale(dt, now, 24) is True
+
+
+# ── parse_snapshot_time ──────────────────────────────────
+
+
+class TestParseSnapshotTime:
+    def test_basic_iso(self) -> None:
+        dt = parse_snapshot_time("2026-07-09T02:00:00")
+        assert dt.year == 2026
+        assert dt.month == 7
+        assert dt.hour == 2
+        assert dt.tzinfo == timezone.utc
+
+    def test_with_z_suffix(self) -> None:
+        dt = parse_snapshot_time("2026-07-09T02:00:00Z")
+        assert dt.tzinfo == timezone.utc
+
+    def test_with_nanosecond_fraction(self) -> None:
+        dt = parse_snapshot_time("2026-07-09T02:00:00.123456789")
+        assert dt.microsecond == 123456
+
+    def test_with_fraction_and_z(self) -> None:
+        dt = parse_snapshot_time("2026-07-09T02:00:00.123456789Z")
+        assert dt.microsecond == 123456
+        assert dt.tzinfo == timezone.utc
+
+
+# ── format_size ──────────────────────────────────────────
+
+
+class TestFormatSize:
+    def test_bytes(self) -> None:
+        assert format_size(500) == "500 B"
+
+    def test_kib(self) -> None:
+        assert format_size(2048) == "2.0 KiB"
+
+    def test_mib(self) -> None:
+        assert format_size(5 * 1024 * 1024) == "5.0 MiB"
+
+    def test_gib(self) -> None:
+        assert format_size(3 * 1024 * 1024 * 1024) == "3.0 GiB"
+
+    def test_zero(self) -> None:
+        assert format_size(0) == "0 B"
+
+
+# ── stale_threshold_hours config ──────────────────────────
+
+
+class TestStaleThresholdConfig:
+    def _make_pw_file(self, tmp_path: Path) -> Path:
+        pw = tmp_path / "restic-pw"
+        pw.write_text("test-password")
+        return pw
+
+    def test_default(self, tmp_path: Path) -> None:
+        pw = self._make_pw_file(tmp_path)
+        config_file = tmp_path / "config.yml"
+        config_file.write_text(yaml.dump({
+            "repository": "/backup",
+            "password_file": str(pw),
+        }))
+        cfg = load_config(str(config_file))
+        assert cfg.stale_threshold_hours == DEFAULT_STALE_THRESHOLD_HOURS
+
+    def test_custom(self, tmp_path: Path) -> None:
+        pw = self._make_pw_file(tmp_path)
+        config_file = tmp_path / "config.yml"
+        config_file.write_text(yaml.dump({
+            "repository": "/backup",
+            "password_file": str(pw),
+            "stale_threshold_hours": 48,
+        }))
+        cfg = load_config(str(config_file))
+        assert cfg.stale_threshold_hours == 48

@@ -62,8 +62,9 @@ def acquire_lock(config: BackupConfig) -> IO[str]:
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        log.error("Another backup is already running (lock held on %s)", lock_path)
-        sys.exit(1)
+        raise RuntimeError(
+            f"Another backup is already running (lock held on {lock_path})"
+        )
     return lock_fd
 
 
@@ -194,26 +195,26 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
 
     tag_env = {"DORESTIC_TAG": group.tag}
 
+    on_start_ok = True
     if group.on_start:
         log.info("  on_start: %s", group.on_start)
         code = run_hook(group.on_start, env=tag_env)
         if code != 0:
             log.error("  on_start failed (exit %d), skipping backup", code)
-            result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
-            if group.on_complete:
-                log.info("  on_complete: %s", group.on_complete)
-                run_hook(group.on_complete, env={**tag_env, "DORESTIC_EXIT_CODE": str(result.exit_code)})
-            return result
+            on_start_ok = False
 
-    exit_code = run_scope_backup(
-        group.tag, resolved_paths, group.exclude, config=config,
-        hostname=make_restic_hostname("host", group.tag),
-    )
-    result = ScopeResult(exit_code=exit_code)
-    if exit_code == 0:
-        log.info("  backup OK")
+    if on_start_ok:
+        exit_code = run_scope_backup(
+            group.tag, resolved_paths, group.exclude, config=config,
+            hostname=make_restic_hostname("host", group.tag),
+        )
+        result = ScopeResult(exit_code=exit_code)
+        if exit_code == 0:
+            log.info("  backup OK")
+        else:
+            log.error("  backup FAILED (exit %d)", exit_code)
     else:
-        log.error("  backup FAILED (exit %d)", exit_code)
+        result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
 
     if group.on_complete:
         log.info("  on_complete: %s", group.on_complete)
@@ -224,7 +225,113 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
     return result
 
 
-def run_backup(config_path: str) -> None:
+def _init_repo(config: BackupConfig) -> None:
+    log.info("=== Initializing repository if needed ===")
+    init_code, init_stdout, init_stderr = run_restic("init", config=config, capture=True)
+    if init_code == 0:
+        log.info("Initialized new repository at %s", config.repository)
+        return
+    check_code, _, _ = run_restic("cat", "config", config=config, capture=True)
+    if check_code != 0:
+        init_output = (init_stdout + "\n" + init_stderr).strip()
+        raise RuntimeError(
+            f"Repository init failed at {config.repository}:\n{init_output}"
+        )
+
+
+def orchestrate_backup(
+    config: BackupConfig,
+    only: str | None = None,
+    log_path: str | None = None,
+) -> int:
+    targeted = only is not None
+
+    if not targeted and config.on_start:
+        log.info("Running on_start: %s", config.on_start)
+        start_code = run_hook(config.on_start)
+        if start_code != 0:
+            log.error("on_start failed (exit %d), aborting backup", start_code)
+            return 1
+
+    _init_repo(config)
+
+    client = docker.DockerClient.from_env()
+    errors = 0
+    staging_dir = Path(tempfile.mkdtemp(prefix="backup-staging-"))
+
+    try:
+        log.info("")
+        log.info("=== Discovering backup-enabled containers ===")
+        targets = discover_targets(client)
+
+        if targeted:
+            targets = [t for t in targets if t.name == only]
+            if not targets and not any(g.tag == only for g in config.host_groups):
+                log.error("No container or host group found matching '%s'", only)
+                return 1
+
+        if not targets:
+            if not targeted:
+                log.info("  No backup-enabled containers found")
+
+        for target in targets:
+            container_result, host_result = backup_container(
+                target, config=config, staging_dir=staging_dir,
+            )
+            if container_result.exit_code != 0:
+                errors += 1
+            if host_result.exit_code != 0:
+                errors += 1
+
+        host_groups = config.host_groups
+        if targeted:
+            host_groups = [g for g in host_groups if g.tag == only]
+
+        if host_groups:
+            log.info("")
+            log.info("=== Processing host backup groups ===")
+            for group in host_groups:
+                group_result = backup_host_group(group, config=config)
+                if group_result.exit_code != 0:
+                    errors += 1
+
+        if not targeted:
+            log.info("")
+            log.info("=== Forgetting old snapshots and pruning ===")
+            run_restic(
+                "forget",
+                "--group-by", "host,tags",
+                "--keep-daily", str(config.retention.daily),
+                "--keep-weekly", str(config.retention.weekly),
+                "--keep-monthly", str(config.retention.monthly),
+                "--prune",
+                config=config,
+            )
+
+            log.info("")
+            log.info("=== Checking repository integrity ===")
+            run_restic("check", config=config)
+
+        overall_exit = 1 if errors > 0 else 0
+
+        log.info("")
+        log.info("=== Backup complete ===")
+        if errors > 0:
+            log.warning("%d backup(s) had errors", errors)
+
+        if not targeted and config.on_complete:
+            log.info("Running on_complete: %s", config.on_complete)
+            run_hook(config.on_complete, env={
+                "DORESTIC_EXIT_CODE": str(overall_exit),
+                **({"DORESTIC_LOGFILE": log_path} if log_path else {}),
+            })
+
+        return overall_exit
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def run_backup(config_path: str, only: str | None = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -239,7 +346,6 @@ def run_backup(config_path: str) -> None:
     original_stderr = sys.stderr
     overall_exit = 1
     lock_fd: IO[str] | None = None
-    staging_dir: Path | None = None
 
     tee_stdout = TeeStream(original_stdout, log_file)
     tee_stderr = TeeStream(original_stderr, log_file)
@@ -255,83 +361,8 @@ def run_backup(config_path: str) -> None:
     try:
         config = load_config(config_path)
         lock_fd = acquire_lock(config)
-
-        if config.on_start:
-            log.info("Running on_start: %s", config.on_start)
-            start_code = run_hook(config.on_start)
-            if start_code != 0:
-                log.error("on_start failed (exit %d), aborting backup", start_code)
-                sys.exit(1)
-
-        log.info("=== Initializing repository if needed ===")
-        init_code, init_output = run_restic("init", config=config, capture=True)
-        if init_code == 0:
-            log.info("Initialized new repository at %s", config.repository)
-        else:
-            check_code, _ = run_restic("cat", "config", config=config, capture=True)
-            if check_code != 0:
-                log.error("Repository init failed at %s:\n%s", config.repository, init_output)
-                sys.exit(1)
-
-        client = docker.DockerClient.from_env()
-        errors = 0
-        staging_dir = Path(tempfile.mkdtemp(prefix="backup-staging-"))
-
-        log.info("")
-        log.info("=== Discovering backup-enabled containers ===")
-        targets = discover_targets(client)
-
-        if not targets:
-            log.info("  No backup-enabled containers found")
-
-        for target in targets:
-            container_result, host_result = backup_container(
-                target, config=config, staging_dir=staging_dir,
-            )
-            if container_result.exit_code != 0:
-                errors += 1
-            if host_result.exit_code != 0:
-                errors += 1
-
-        if config.host_groups:
-            log.info("")
-            log.info("=== Processing host backup groups ===")
-            for group in config.host_groups:
-                group_result = backup_host_group(group, config=config)
-                if group_result.exit_code != 0:
-                    errors += 1
-
-        log.info("")
-        log.info("=== Forgetting old snapshots and pruning ===")
-        run_restic(
-            "forget",
-            "--group-by", "host,tags",
-            "--keep-daily", str(config.retention.daily),
-            "--keep-weekly", str(config.retention.weekly),
-            "--keep-monthly", str(config.retention.monthly),
-            "--prune",
-            config=config,
-        )
-
-        log.info("")
-        log.info("=== Checking repository integrity ===")
-        run_restic("check", config=config)
-
-        overall_exit = 1 if errors > 0 else 0
-
-        log.info("")
-        log.info("=== Backup complete ===")
-        if errors > 0:
-            log.warning("%d backup(s) had errors", errors)
-
-        if config.on_complete:
-            log_file.flush()
-            log.info("Running on_complete: %s", config.on_complete)
-            run_hook(config.on_complete, env={
-                "DORESTIC_EXIT_CODE": str(overall_exit),
-                "DORESTIC_LOGFILE": log_path,
-            })
-
+        log_file.flush()
+        overall_exit = orchestrate_backup(config, only=only, log_path=log_path)
     except SystemExit:
         raise
     except Exception:
@@ -346,11 +377,7 @@ def run_backup(config_path: str) -> None:
         if not log_file.closed:
             log_file.close()
         os.unlink(log_path)
-        if staging_dir is not None:
-            shutil.rmtree(staging_dir, ignore_errors=True)
         if lock_fd is not None:
             lock_fd.close()
 
     sys.exit(overall_exit)
-
-

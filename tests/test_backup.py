@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import docker
 from docker.models.containers import Container
@@ -23,12 +23,14 @@ from dorestic import (
     ContainerTarget,
     HostGroup,
     ScopeConfig,
+    ScopeResult,
     backup_container,
     backup_host_group,
     make_restic_hostname,
     run_docker_exec,
     run_scope_backup,
 )
+from dorestic.backup import orchestrate_backup
 from tests.conftest import TEST_LABEL_PREFIX, requires_docker, restic_run
 
 DUMMY_CONFIG = BackupConfig(repository="/dummy", password_file="/dummy")
@@ -784,3 +786,163 @@ class TestDockerCpFallback:
         finally:
             container.stop(timeout=1)
             container.remove(force=True)
+
+
+# ── orchestrate_backup / --only filtering ─────────────────
+
+
+class TestOrchestrateBackup:
+    """Test orchestrate_backup directly, mocking Docker and restic."""
+
+    def _make_target(self, name: str) -> ContainerTarget:
+        container = MagicMock()
+        container.name = name
+        return ContainerTarget(name=name, container=container)
+
+    def _run(
+        self,
+        config: BackupConfig,
+        only: str | None = None,
+        targets: list[ContainerTarget] | None = None,
+    ) -> dict[str, Any]:
+        if targets is None:
+            targets = []
+
+        backup_calls: list[str] = []
+        host_group_calls: list[str] = []
+        restic_calls: list[str] = []
+        hook_calls: list[str] = []
+
+        def mock_backup_container(target: Any, **_: Any) -> tuple[Any, Any]:
+            backup_calls.append(target.name)
+            return ScopeResult(exit_code=0), ScopeResult(exit_code=0)
+
+        def mock_backup_host_group(group: Any, **_: Any) -> Any:
+            host_group_calls.append(group.tag)
+            return ScopeResult(exit_code=0)
+
+        def mock_run_restic(*args: str, **kwargs: Any) -> Any:
+            restic_calls.append(args[0])
+            if kwargs.get("capture"):
+                return 0, "", ""
+            return 0
+
+        def mock_run_hook(command: str, **_: Any) -> int:
+            hook_calls.append(command)
+            return 0
+
+        with (
+            patch("dorestic.backup.docker.DockerClient") as mock_docker,
+            patch("dorestic.backup.discover_targets", return_value=targets),
+            patch("dorestic.backup.backup_container", side_effect=mock_backup_container),
+            patch("dorestic.backup.backup_host_group", side_effect=mock_backup_host_group),
+            patch("dorestic.backup.run_restic", side_effect=mock_run_restic),
+            patch("dorestic.backup.run_hook", side_effect=mock_run_hook),
+        ):
+            mock_docker.from_env.return_value = MagicMock()
+            exit_code = orchestrate_backup(config, only=only)
+
+        return {
+            "exit_code": exit_code,
+            "backup_calls": backup_calls,
+            "host_group_calls": host_group_calls,
+            "restic_calls": restic_calls,
+            "hook_calls": hook_calls,
+        }
+
+    def test_only_filters_to_matching_container(self) -> None:
+        targets = [self._make_target("db"), self._make_target("redis")]
+
+        result = self._run(DUMMY_CONFIG, only="db", targets=targets)
+
+        assert result["exit_code"] == 0
+        assert result["backup_calls"] == ["db"]
+
+    def test_only_filters_to_matching_host_group(self) -> None:
+        config = BackupConfig(
+            repository="/dummy", password_file="/dummy",
+            host_groups=[
+                HostGroup(tag="documents", paths=["/data/docs"]),
+                HostGroup(tag="photos", paths=["/data/photos"]),
+            ],
+        )
+
+        result = self._run(config, only="documents")
+
+        assert result["exit_code"] == 0
+        assert result["backup_calls"] == []
+        assert result["host_group_calls"] == ["documents"]
+
+    def test_only_skips_global_hooks(self) -> None:
+        config = BackupConfig(
+            repository="/dummy", password_file="/dummy",
+            on_start="echo global_start",
+            on_complete="echo global_complete",
+        )
+        targets = [self._make_target("db")]
+
+        result = self._run(config, only="db", targets=targets)
+
+        assert result["exit_code"] == 0
+        assert result["hook_calls"] == []
+
+    def test_only_skips_prune_and_check(self) -> None:
+        targets = [self._make_target("db")]
+
+        result = self._run(DUMMY_CONFIG, only="db", targets=targets)
+
+        assert "forget" not in result["restic_calls"]
+        assert "check" not in result["restic_calls"]
+
+    def test_full_backup_runs_prune_and_check(self) -> None:
+        targets = [self._make_target("db")]
+
+        result = self._run(DUMMY_CONFIG, only=None, targets=targets)
+
+        assert "forget" in result["restic_calls"]
+        assert "check" in result["restic_calls"]
+
+    def test_full_backup_runs_global_hooks(self) -> None:
+        config = BackupConfig(
+            repository="/dummy", password_file="/dummy",
+            on_start="echo global_start",
+            on_complete="echo global_complete",
+        )
+        targets = [self._make_target("db")]
+
+        result = self._run(config, only=None, targets=targets)
+
+        assert "echo global_start" in result["hook_calls"]
+        assert "echo global_complete" in result["hook_calls"]
+
+    def test_only_no_match_returns_error(self) -> None:
+        targets = [self._make_target("db")]
+
+        result = self._run(DUMMY_CONFIG, only="nonexistent", targets=targets)
+
+        assert result["exit_code"] == 1
+        assert result["backup_calls"] == []
+
+    def test_only_matches_host_group_with_no_containers(self) -> None:
+        config = BackupConfig(
+            repository="/dummy", password_file="/dummy",
+            host_groups=[HostGroup(tag="documents", paths=["/data/docs"])],
+        )
+
+        result = self._run(config, only="documents", targets=[])
+
+        assert result["exit_code"] == 0
+        assert result["host_group_calls"] == ["documents"]
+
+    def test_only_matches_both_container_and_host_group(self) -> None:
+        config = BackupConfig(
+            repository="/dummy", password_file="/dummy",
+            host_groups=[HostGroup(tag="myapp", paths=["/data"])],
+        )
+        targets = [self._make_target("myapp")]
+
+        result = self._run(config, only="myapp", targets=targets)
+
+        assert result["exit_code"] == 0
+        assert result["backup_calls"] == ["myapp"]
+        assert result["host_group_calls"] == ["myapp"]

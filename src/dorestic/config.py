@@ -9,6 +9,7 @@ import yaml
 from dorestic.models import (
     BackupConfig,
     DEFAULT_RESTIC_IMAGE,
+    DEFAULT_STALE_THRESHOLD_HOURS,
     HostGroup,
     RetentionPolicy,
 )
@@ -36,7 +37,7 @@ def find_config() -> str:
         f"No config.yml found. Searched:\n"
         f"  ./{CONFIG_FILENAME}\n"
         f"  {xdg_path}\n"
-        f"Run 'dorestic --init' to create one, or pass a path: dorestic /path/to/config.yml"
+        f"Run 'dorestic init' to create one, or pass --config: dorestic --config /path/to/config.yml"
     )
 
 
@@ -99,6 +100,10 @@ def load_config(path: str) -> BackupConfig:
     on_start_val = data.get("on_start")
     on_complete_val = data.get("on_complete")
 
+    stale_threshold_hours = int(
+        data.get("stale_threshold_hours", DEFAULT_STALE_THRESHOLD_HOURS)
+    )
+
     return BackupConfig(
         repository=str(data["repository"]),
         password_file=str(data["password_file"]),
@@ -107,4 +112,5 @@ def load_config(path: str) -> BackupConfig:
         on_complete=str(on_complete_val) if on_complete_val is not None else None,
         retention=retention,
         host_groups=host_groups,
+        stale_threshold_hours=stale_threshold_hours,
     )
