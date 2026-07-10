@@ -22,11 +22,13 @@
 - `dorestic backup -v` — verbose/debug output (resolved paths, mount mappings, restic commands)
 - `dorestic backup -q` — quiet mode (suppress output on success, print everything on failure)
 - `log_dir` config option — directory for persistent timestamped backup logs; without it, a temp log is created for `on_complete` and then deleted
+- `tmp_dir` config option — directory for temporary files during backup, verify, and restore (default: `/tmp`); use a disk-backed path for large backups since `/tmp` is often a RAM-backed tmpfs on Linux
 - `stale_threshold_hours` config option (default: 25) for controlling staleness markers in `list` output
 - `--config` / `-c` top-level flag to specify config path explicitly
 - New `api.py` and `display.py` modules
 
 ### Changed
+- `dorestic` with no args (or `-h`) now shows a clean grouped command listing instead of the default argparse error
 - CLI commands (`list`, `view`) now use `Dorestic` class internally — CLI is a thin layer over the library
 - `_resolve_snapshot` now uses O(n) single-pass algorithm instead of O(n^2)
 - `acquire_lock` raises `RuntimeError` instead of calling `sys.exit(1)` — nothing in the library path calls `sys.exit`
