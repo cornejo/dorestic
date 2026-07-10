@@ -175,6 +175,24 @@ def restore_snapshot(
     return result.returncode
 
 
+def docker_rmtree(config: BackupConfig, path: str) -> None:
+    """Remove a directory tree using Docker to handle root-owned files.
+
+    Restic restores inside Docker create root-owned files that a non-root
+    host user cannot delete.  This runs rm -rf inside a container with the
+    same image that created the files.
+    """
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{path}:{path}",
+        "--entrypoint", "rm",
+        config.restic_image,
+        "-rf", path,
+    ]
+    log.debug("docker rmtree: %s", " ".join(cmd))
+    subprocess.run(cmd, capture_output=True)
+
+
 def forget_snapshots(
     config: BackupConfig, snapshot_ids: list[str],
 ) -> int:
