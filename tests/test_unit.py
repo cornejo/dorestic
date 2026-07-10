@@ -53,6 +53,8 @@ from dorestic.display import (
     is_stale,
     print_dry_run_plan,
     print_status,
+    print_tag_detail,
+    print_tag_summary,
 )
 from dorestic.models import RetentionPolicy, parse_snapshot_time
 
@@ -1589,3 +1591,203 @@ class TestDoresticDiff:
         assert result.entries[0].path == "/data/new.txt"
         assert result.entries[1].modifier == "-"
         assert result.entries[2].modifier == "M"
+
+    def test_restic_failure(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [
+            {"id": "aaa111", "short_id": "aaa111", "time": "2026-07-08T02:00:00Z", "tags": ["db"]},
+            {"id": "bbb222", "short_id": "bbb222", "time": "2026-07-09T02:00:00Z", "tags": ["db2"]},
+        ]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.diff_snapshots", return_value=(1, "", "fatal error")):
+                with pytest.raises(RuntimeError, match="restic diff failed"):
+                    d.diff("aaa111", "bbb222")
+
+
+# ── Dorestic.check ──────────────────────────────────────
+
+
+class TestDoresticCheck:
+    def test_returns_true_on_success(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        with patch("dorestic.api.run_restic", return_value=0):
+            assert d.check() is True
+
+    def test_returns_false_on_failure(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        with patch("dorestic.api.run_restic", return_value=1):
+            assert d.check() is False
+
+
+# ── Dorestic.status ─────────────────────────────────────
+
+
+class TestDoresticStatus:
+    def test_builds_report(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw_snaps = [{"id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        raw_stats = {"total_size": 5000, "total_file_count": 10}
+        with patch("dorestic.api.list_snapshots", return_value=raw_snaps):
+            with patch("dorestic.api.repo_stats", return_value=raw_stats):
+                report = d.status()
+        assert report.repository == "/repo"
+        assert report.repo_stats is not None
+        assert report.repo_stats.total_size == 5000
+        assert len(report.snapshots) == 1
+
+    def test_graceful_on_stats_failure(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw_snaps = [{"id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        with patch("dorestic.api.list_snapshots", return_value=raw_snaps):
+            with patch("dorestic.api.repo_stats", side_effect=RuntimeError("fail")):
+                report = d.status()
+        assert report.repo_stats is None
+        assert len(report.snapshots) == 1
+
+
+# ── Dorestic.verify_snapshot ────────────────────────────
+
+
+class TestDoresticVerifySnapshot:
+    def test_specific_ref(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.restore_snapshot", return_value=0):
+                with patch("shutil.rmtree"):
+                    result = d.verify_snapshot(ref="db")
+        assert result.success is True
+        assert result.snapshot_id == "abc123full"
+        assert result.tags == ["db"]
+
+    def test_random_when_no_ref(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.restore_snapshot", return_value=0):
+                with patch("shutil.rmtree"):
+                    result = d.verify_snapshot()
+        assert result.success is True
+
+    def test_no_snapshots_raises(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        with patch("dorestic.api.list_snapshots", return_value=[]):
+            with pytest.raises(ValueError, match="No snapshots in repository"):
+                d.verify_snapshot()
+
+    def test_restore_failure(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.restore_snapshot", return_value=1):
+                with patch("shutil.rmtree"):
+                    result = d.verify_snapshot(ref="db")
+        assert result.success is False
+
+
+# ── Dorestic.restore (additional) ───────────────────────
+
+
+class TestDoresticRestoreExtra:
+    def test_dry_run_does_not_create_directory(self, tmp_path: Path) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        target = str(tmp_path / "should_not_exist")
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.restore_snapshot", return_value=0):
+                result = d.restore("db", target=target, dry_run=True)
+        assert result.success is True
+        assert not Path(target).exists()
+
+    def test_explicit_target(self, tmp_path: Path) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        target = str(tmp_path / "my_restore")
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.restore_snapshot", return_value=0):
+                result = d.restore("db", target=target)
+        assert result.target == str(Path(target).resolve())
+
+
+# ── print_tag_summary / print_tag_detail ────────────────
+
+
+class TestPrintTagSummary:
+    def _make_snap(self, tag: str, time: datetime) -> Snapshot:
+        return Snapshot(
+            id="a" * 64, short_id="a" * 8, tags=[tag],
+            time=time, paths=["/data"], hostname="host",
+        )
+
+    def test_groups_by_tag(self, capsys: pytest.CaptureFixture[str]) -> None:
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+        config = BackupConfig(repository="/r", password_file="/p")
+        snaps = [
+            self._make_snap("db", datetime(2026, 7, 9, 2, 0, 0, tzinfo=timezone.utc)),
+            self._make_snap("db", datetime(2026, 7, 8, 2, 0, 0, tzinfo=timezone.utc)),
+            self._make_snap("web", datetime(2026, 7, 9, 10, 0, 0, tzinfo=timezone.utc)),
+        ]
+        print_tag_summary(snaps, now, config)
+        out = capsys.readouterr().out
+        assert "db" in out
+        assert "web" in out
+        assert "2" in out  # db has 2 snapshots
+        assert "1" in out  # web has 1
+
+    def test_stale_marker(self, capsys: pytest.CaptureFixture[str]) -> None:
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+        config = BackupConfig(repository="/r", password_file="/p", stale_threshold_hours=1)
+        snaps = [
+            self._make_snap("old", datetime(2026, 7, 8, 2, 0, 0, tzinfo=timezone.utc)),
+        ]
+        print_tag_summary(snaps, now, config)
+        out = capsys.readouterr().out
+        assert "(!)" in out
+
+
+class TestPrintTagDetail:
+    def test_shows_snapshots_newest_first(self, capsys: pytest.CaptureFixture[str]) -> None:
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+        config = BackupConfig(repository="/r", password_file="/p")
+        snaps = [
+            Snapshot(
+                id="older111" + "0" * 56, short_id="older111",
+                tags=["db"], time=datetime(2026, 7, 8, 2, 0, 0, tzinfo=timezone.utc),
+                paths=["/data"], hostname="host",
+            ),
+            Snapshot(
+                id="newer222" + "0" * 56, short_id="newer222",
+                tags=["db"], time=datetime(2026, 7, 9, 2, 0, 0, tzinfo=timezone.utc),
+                paths=["/data"], hostname="host",
+            ),
+        ]
+        print_tag_detail(snaps, now, config)
+        out = capsys.readouterr().out
+        newer_pos = out.index("newer222")
+        older_pos = out.index("older111")
+        assert newer_pos < older_pos
+
+    def test_shows_paths(self, capsys: pytest.CaptureFixture[str]) -> None:
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+        config = BackupConfig(repository="/r", password_file="/p")
+        snaps = [
+            Snapshot(
+                id="abc12345" + "0" * 56, short_id="abc12345",
+                tags=["db"], time=datetime(2026, 7, 9, 2, 0, 0, tzinfo=timezone.utc),
+                paths=["/data", "/config"], hostname="host",
+            ),
+        ]
+        print_tag_detail(snaps, now, config)
+        out = capsys.readouterr().out
+        assert "/data, /config" in out

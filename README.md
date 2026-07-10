@@ -336,7 +336,7 @@ dorestic diff my-db:container my-db:host
 ```
 
 Retention policy is configurable in `config.yml`. Default: 7 daily, 4 weekly,
-12 monthly. Applied per tag via `--group-by tags`.
+12 monthly. Applied per scope via `--group-by host,tags`.
 
 ## Host Backup Groups
 
@@ -489,7 +489,8 @@ result = d.backup(only="my-db")
 
 # Repository health check
 report = d.status()
-print(f"Repo size: {report.repo_stats.total_size}")
+if report.repo_stats:
+    print(f"Repo size: {report.repo_stats.total_size}")
 
 # Integrity check
 if d.check():
@@ -544,7 +545,7 @@ dorestic/
 │   ├── __init__.py          # Public API re-exports
 │   ├── __main__.py          # Entry point for python -m dorestic
 │   ├── api.py               # Dorestic class (library interface)
-│   ├── cli.py               # CLI subcommands (backup, list, view, init)
+│   ├── cli.py               # CLI subcommands
 │   ├── display.py           # Formatting and display helpers
 │   ├── models.py            # Dataclasses and constants (Snapshot, BackupResult, etc.)
 │   ├── config.py            # Config file loading and validation

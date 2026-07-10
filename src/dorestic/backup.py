@@ -67,6 +67,7 @@ def acquire_lock(config: BackupConfig) -> IO[str]:
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        lock_fd.close()
         raise RuntimeError(
             f"Another backup is already running (lock held on {lock_path})"
         )
