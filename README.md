@@ -98,7 +98,7 @@ dorestic restore <id|tag> --target DIR Restore to a specific directory
 dorestic restore <id|tag> --dry-run    Preview what would be restored
 dorestic verify-snapshot [ref]  Restore a snapshot to temp dir to prove recoverability
 dorestic diff <snap1> <snap2>   Show what changed between two snapshots
-dorestic forget-tag <tag>       Permanently delete all snapshots with a given tag
+dorestic forget-tag <tag> [...]  Permanently delete all snapshots with given tag(s)
 dorestic forget-tag --untagged  Permanently delete all untagged snapshots
 dorestic status                 Show repository health: size, latest backups, retention
 dorestic check                  Run a repository integrity check
@@ -345,12 +345,19 @@ Remove all snapshots with a given tag (e.g. leftover tags from before dorestic):
 # Delete all snapshots tagged 'old-backup'
 dorestic forget-tag old-backup
 
+# Delete multiple tags at once
+dorestic forget-tag old-backup stale-tag host
+
 # Delete all untagged snapshots
 dorestic forget-tag --untagged
+
+# Combine tags and --untagged
+dorestic forget-tag old-backup --untagged
 ```
 
-Both require interactive confirmation: re-type the tag name, then confirm `y/N`.
-After forgetting, the repository is pruned to reclaim space.
+Each tag requires re-typing the name to confirm. After all tags are verified,
+a single `y/N` prompt confirms the operation. The repository is pruned after
+forgetting to reclaim space.
 
 Retention policy is configurable in `config.yml`. Default: 7 daily, 4 weekly,
 12 monthly. Applied per scope via `--group-by host,tags`.

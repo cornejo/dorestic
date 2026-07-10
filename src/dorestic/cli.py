@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dorestic.api import Dorestic
 from dorestic.config import find_config
+from dorestic.models import Snapshot
 from dorestic.display import (
     format_size,
     print_dry_run_plan,
@@ -223,48 +224,69 @@ def _cmd_verify(args: argparse.Namespace) -> None:
 def _cmd_forget_tag(args: argparse.Namespace) -> None:
     d = Dorestic.from_config_path(_resolve_config(args))
     untagged: bool = args.untagged
-    tag: str | None = args.tag if not untagged else None
+    tags: list[str] = args.tags or []
 
-    if not untagged and tag is None:
-        print("Error: provide a tag name, or use --untagged", file=sys.stderr)
+    if not untagged and not tags:
+        print("Error: provide one or more tag names, or use --untagged", file=sys.stderr)
         sys.exit(1)
+
+    # tag=None means untagged snapshots in the API
+    to_forget: list[str | None] = list(tags)
+    if untagged:
+        to_forget.append(None)
 
     snapshots = d.list_snapshots()
-    if tag is None:
-        matched = [s for s in snapshots if not s.tags]
-    else:
-        matched = [s for s in snapshots if tag in s.tags]
+    confirmed: list[tuple[str | None, list[Snapshot]]] = []
+    total_count = 0
 
-    display_name = tag if tag is not None else "(untagged)"
-    confirm_text = tag if tag is not None else "untagged"
+    for tag in to_forget:
+        if tag is None:
+            matched = [s for s in snapshots if not s.tags]
+        else:
+            matched = [s for s in snapshots if tag in s.tags]
 
-    if not matched:
-        print(f"No snapshots found for '{display_name}'")
+        display_name = tag if tag is not None else "(untagged)"
+        confirm_text = tag if tag is not None else "untagged"
+
+        if not matched:
+            print(f"No snapshots found for '{display_name}', skipping.")
+            continue
+
+        print(f"\nFound {len(matched)} snapshot(s) tagged '{display_name}':")
+        for snap in sorted(matched, key=lambda s: s.time, reverse=True):
+            print(f"  {snap.short_id}  {snap.time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        print(f"\nType '{confirm_text}' to confirm: ", end="", flush=True)
+        typed = input()
+        if typed != confirm_text:
+            print("Aborted.")
+            sys.exit(1)
+
+        confirmed.append((tag, matched))
+        total_count += len(matched)
+
+    if not confirmed:
         return
 
-    print(f"\nFound {len(matched)} snapshot(s) tagged '{display_name}':")
-    for snap in sorted(matched, key=lambda s: s.time, reverse=True):
-        print(f"  {snap.short_id}  {snap.time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    print(f"\nType '{confirm_text}' to confirm: ", end="", flush=True)
-    typed = input()
-    if typed != confirm_text:
-        print("Aborted.")
-        sys.exit(1)
-
-    print(f"Permanently delete {len(matched)} snapshot(s) and prune? [y/N] ", end="", flush=True)
+    print(f"\nPermanently delete {total_count} snapshot(s) and prune? [y/N] ", end="", flush=True)
     answer = input()
     if answer.lower() != "y":
         print("Aborted.")
         sys.exit(1)
 
     try:
-        d.forget_tag(tag)
+        for tag, matched in confirmed:
+            d.forget_tag(tag, do_prune=False)
+            display_name = tag if tag is not None else "(untagged)"
+            print(f"Forgotten {len(matched)} '{display_name}' snapshot(s).")
+        from dorestic.restic import prune
+        prune_code = prune(d.config)
+        if prune_code != 0:
+            raise RuntimeError(f"restic prune failed (exit {prune_code})")
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Forgotten {len(matched)} snapshot(s).")
     print("Done.")
 
 
@@ -390,15 +412,15 @@ def main() -> None:
 
     forget_tag_parser = subparsers.add_parser(
         "forget-tag",
-        help="permanently delete all snapshots with a given tag",
+        help="permanently delete all snapshots with given tag(s)",
     )
     forget_tag_parser.add_argument(
-        "tag", nargs="?", default=None,
-        help="tag to forget (all snapshots with this tag are deleted)",
+        "tags", nargs="*",
+        help="tag(s) to forget (all snapshots with each tag are deleted)",
     )
     forget_tag_parser.add_argument(
         "--untagged", action="store_true",
-        help="forget all untagged snapshots",
+        help="also forget all untagged snapshots",
     )
 
     args = parser.parse_args()
