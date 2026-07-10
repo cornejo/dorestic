@@ -66,10 +66,12 @@ from dorestic.paths import (
     resolve_host_paths as resolve_host_paths,
 )
 from dorestic.restic import (
+    diff_snapshots as diff_snapshots,
+    forget_snapshots as forget_snapshots,
     iter_snapshot_files as iter_snapshot_files,
     list_snapshots as list_snapshots,
     make_restic_hostname as make_restic_hostname,
-    diff_snapshots as diff_snapshots,
+    prune as prune,
     repo_stats as repo_stats,
     restore_snapshot as restore_snapshot,
     run_restic as run_restic,

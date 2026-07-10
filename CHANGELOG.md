@@ -13,6 +13,8 @@
 - `dorestic restore <id|tag>` — restore a snapshot to a staging directory (default `./restore/<tag>/`), with `--target` and `--dry-run`
 - `dorestic verify-snapshot [ref]` — restore a snapshot to a temp dir to prove recoverability (random snapshot if no ref given)
 - `dorestic diff <snap1> <snap2>` — show what changed between two snapshots (wraps `restic diff`, resolves tags to latest)
+- `dorestic forget-tag <tag>` — permanently delete all snapshots with a given tag, with interactive confirmation and automatic prune
+- `dorestic forget-tag --untagged` — permanently delete all untagged snapshots
 - `dorestic status` — dashboard showing repository size, latest backup per scope, retention policy, and staleness
 - `dorestic check` — standalone repository integrity check (previously only ran as part of a full backup)
 - `dorestic config-validate` — validate config file and Docker container labels without running a backup

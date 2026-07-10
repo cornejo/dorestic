@@ -220,6 +220,54 @@ def _cmd_verify(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_forget_tag(args: argparse.Namespace) -> None:
+    d = Dorestic.from_config_path(_resolve_config(args))
+    untagged: bool = args.untagged
+    tag: str | None = args.tag if not untagged else None
+
+    if not untagged and tag is None:
+        print("Error: provide a tag name, or use --untagged", file=sys.stderr)
+        sys.exit(1)
+
+    snapshots = d.list_snapshots()
+    if tag is None:
+        matched = [s for s in snapshots if not s.tags]
+    else:
+        matched = [s for s in snapshots if tag in s.tags]
+
+    display_name = tag if tag is not None else "(untagged)"
+    confirm_text = tag if tag is not None else "untagged"
+
+    if not matched:
+        print(f"No snapshots found for '{display_name}'")
+        return
+
+    print(f"\nFound {len(matched)} snapshot(s) tagged '{display_name}':")
+    for snap in sorted(matched, key=lambda s: s.time, reverse=True):
+        print(f"  {snap.short_id}  {snap.time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    print(f"\nType '{confirm_text}' to confirm: ", end="", flush=True)
+    typed = input()
+    if typed != confirm_text:
+        print("Aborted.")
+        sys.exit(1)
+
+    print(f"Permanently delete {len(matched)} snapshot(s) and prune? [y/N] ", end="", flush=True)
+    answer = input()
+    if answer.lower() != "y":
+        print("Aborted.")
+        sys.exit(1)
+
+    try:
+        d.forget_tag(tag)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Forgotten {len(matched)} snapshot(s).")
+    print("Done.")
+
+
 def _cmd_diff(args: argparse.Namespace) -> None:
     d = Dorestic.from_config_path(_resolve_config(args))
     try:
@@ -340,6 +388,19 @@ def main() -> None:
     diff_parser.add_argument("snapshot1", help="first snapshot ID or tag")
     diff_parser.add_argument("snapshot2", help="second snapshot ID or tag")
 
+    forget_tag_parser = subparsers.add_parser(
+        "forget-tag",
+        help="permanently delete all snapshots with a given tag",
+    )
+    forget_tag_parser.add_argument(
+        "tag", nargs="?", default=None,
+        help="tag to forget (all snapshots with this tag are deleted)",
+    )
+    forget_tag_parser.add_argument(
+        "--untagged", action="store_true",
+        help="forget all untagged snapshots",
+    )
+
     args = parser.parse_args()
 
     commands = {
@@ -353,5 +414,6 @@ def main() -> None:
         "restore": _cmd_restore,
         "verify-snapshot": _cmd_verify,
         "diff": _cmd_diff,
+        "forget-tag": _cmd_forget_tag,
     }
     commands[args.command](args)

@@ -98,6 +98,8 @@ dorestic restore <id|tag> --target DIR Restore to a specific directory
 dorestic restore <id|tag> --dry-run    Preview what would be restored
 dorestic verify-snapshot [ref]  Restore a snapshot to temp dir to prove recoverability
 dorestic diff <snap1> <snap2>   Show what changed between two snapshots
+dorestic forget-tag <tag>       Permanently delete all snapshots with a given tag
+dorestic forget-tag --untagged  Permanently delete all untagged snapshots
 dorestic status                 Show repository health: size, latest backups, retention
 dorestic check                  Run a repository integrity check
 dorestic config-validate        Validate config and Docker labels without running a backup
@@ -335,6 +337,21 @@ dorestic diff abc123de def456ab
 dorestic diff my-db:container my-db:host
 ```
 
+### Removing old tags
+
+Remove all snapshots with a given tag (e.g. leftover tags from before dorestic):
+
+```bash
+# Delete all snapshots tagged 'old-backup'
+dorestic forget-tag old-backup
+
+# Delete all untagged snapshots
+dorestic forget-tag --untagged
+```
+
+Both require interactive confirmation: re-type the tag name, then confirm `y/N`.
+After forgetting, the repository is pruned to reclaim space.
+
 Retention policy is configurable in `config.yml`. Default: 7 daily, 4 weekly,
 12 monthly. Applied per scope via `--group-by host,tags`.
 
@@ -512,6 +529,13 @@ print(f"Verified {v.snapshot_id[:8]}: {v.file_count} files")
 diff = d.diff("abc123", "def456")
 for entry in diff.entries:
     print(f"{entry.modifier} {entry.path}")
+
+# Remove all snapshots with a tag (returns list of forgotten Snapshots)
+forgotten = d.forget_tag("old-backup")
+print(f"Forgotten {len(forgotten)} snapshots")
+
+# Remove untagged snapshots (pass None)
+d.forget_tag(None)
 ```
 
 All methods return typed dataclasses (`Snapshot`, `SnapshotFile`, `BackupResult`)

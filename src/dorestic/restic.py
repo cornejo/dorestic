@@ -175,6 +175,18 @@ def restore_snapshot(
     return result.returncode
 
 
+def forget_snapshots(
+    config: BackupConfig, snapshot_ids: list[str],
+) -> int:
+    if not snapshot_ids:
+        return 0
+    return run_restic("forget", *snapshot_ids, config=config)
+
+
+def prune(config: BackupConfig) -> int:
+    return run_restic("prune", config=config)
+
+
 def diff_snapshots(
     config: BackupConfig, id1: str, id2: str,
 ) -> tuple[int, str, str]:
