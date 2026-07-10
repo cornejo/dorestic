@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.0 — 2026-07-09
+## v0.5.0 — 2026-07-10
 
 ### Added
 - `Dorestic` class — first-class library interface for importing dorestic from other Python projects
