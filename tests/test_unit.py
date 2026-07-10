@@ -1434,14 +1434,17 @@ class TestPrintStatus:
 
 
 class TestDoresticValidate:
-    def test_warns_missing_log_dir(self) -> None:
+    def test_no_warning_for_missing_log_dir(self) -> None:
         config = BackupConfig(
             repository="/repo", password_file="/pw",
             log_dir="/nonexistent/path",
+            host_groups=[HostGroup(tag="docs", paths=["/data"])],
         )
         d = Dorestic(config)
-        issues = d.validate()
-        assert any("log_dir does not exist" in i for i in issues)
+        with patch("dorestic.api.docker.DockerClient"):
+            with patch("dorestic.api.discover_targets", return_value=[]):
+                issues = d.validate()
+        assert issues == []
 
     def test_warns_log_dir_not_directory(self, tmp_path: Path) -> None:
         f = tmp_path / "not_a_dir"
@@ -1795,3 +1798,75 @@ class TestPrintTagDetail:
         print_tag_detail(snaps, now, config)
         out = capsys.readouterr().out
         assert "/data, /config" in out
+
+
+# ── Dorestic.forget_tag ─────────────────────────────────
+
+
+class TestDoresticForgetTag:
+    def _raw(self, id: str, tags: list[str]) -> dict[str, str | list[str]]:
+        return {"id": id, "short_id": id[:8], "time": "2026-07-09T02:00:00Z", "tags": tags}
+
+    def test_forgets_matching_tag(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [self._raw("aaa111", ["old-tag"]), self._raw("bbb222", ["keep"])]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.forget_snapshots", return_value=0) as mock_forget:
+                with patch("dorestic.api.prune", return_value=0):
+                    result = d.forget_tag("old-tag")
+        assert len(result) == 1
+        assert result[0].id == "aaa111"
+        mock_forget.assert_called_once_with(config, ["aaa111"])
+
+    def test_forgets_untagged(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [
+            {"id": "untagged1", "short_id": "untag1", "time": "2026-07-09T02:00:00Z", "tags": None},
+            self._raw("tagged1", ["db"]),
+        ]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.forget_snapshots", return_value=0) as mock_forget:
+                with patch("dorestic.api.prune", return_value=0):
+                    result = d.forget_tag(None)
+        assert len(result) == 1
+        assert result[0].id == "untagged1"
+        mock_forget.assert_called_once_with(config, ["untagged1"])
+
+    def test_returns_empty_when_no_match(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [self._raw("aaa111", ["db"])]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            result = d.forget_tag("nonexistent")
+        assert result == []
+
+    def test_raises_on_forget_failure(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [self._raw("aaa111", ["old"])]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.forget_snapshots", return_value=1):
+                with pytest.raises(RuntimeError, match="restic forget failed"):
+                    d.forget_tag("old")
+
+    def test_raises_on_prune_failure(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [self._raw("aaa111", ["old"])]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.forget_snapshots", return_value=0):
+                with patch("dorestic.api.prune", return_value=1):
+                    with pytest.raises(RuntimeError, match="restic prune failed"):
+                        d.forget_tag("old")
+
+    def test_skip_prune(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [self._raw("aaa111", ["old"])]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.forget_snapshots", return_value=0):
+                with patch("dorestic.api.prune") as mock_prune:
+                    d.forget_tag("old", do_prune=False)
+        mock_prune.assert_not_called()

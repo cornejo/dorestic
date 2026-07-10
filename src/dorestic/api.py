@@ -27,8 +27,10 @@ from dorestic.models import (
 )
 from dorestic.restic import (
     diff_snapshots,
+    forget_snapshots,
     iter_snapshot_files,
     list_snapshots,
+    prune,
     repo_stats,
     restore_snapshot,
     run_restic,
@@ -108,9 +110,7 @@ class Dorestic:
         issues: list[str] = []
         if self.config.log_dir:
             log_dir = Path(self.config.log_dir)
-            if not log_dir.exists():
-                issues.append(f"log_dir does not exist: {self.config.log_dir}")
-            elif not log_dir.is_dir():
+            if log_dir.exists() and not log_dir.is_dir():
                 issues.append(f"log_dir is not a directory: {self.config.log_dir}")
 
         try:
@@ -239,6 +239,30 @@ class Dorestic:
             snapshot_id_2=snap2.id,
             entries=entries,
         )
+
+    def forget_tag(
+        self, tag: str | None, do_prune: bool = True,
+    ) -> list[Snapshot]:
+        snapshots = self.list_snapshots()
+        if tag is None:
+            matched = [s for s in snapshots if not s.tags]
+        else:
+            matched = [s for s in snapshots if tag in s.tags]
+        if not matched:
+            return []
+        ids = [s.id for s in matched]
+        exit_code = forget_snapshots(self.config, ids)
+        if exit_code != 0:
+            raise RuntimeError(
+                f"restic forget failed (exit {exit_code})"
+            )
+        if do_prune:
+            prune_code = prune(self.config)
+            if prune_code != 0:
+                raise RuntimeError(
+                    f"restic prune failed (exit {prune_code})"
+                )
+        return matched
 
     @staticmethod
     def _resolve_from(
