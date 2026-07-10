@@ -130,6 +130,53 @@ class DryRunPlan:
     global_on_complete: str | None = None
 
 
+@dataclass
+class RestoreResult:
+    success: bool
+    target: str
+    snapshot_id: str
+    file_count: int
+    total_size: int
+
+
+@dataclass
+class VerifyResult:
+    success: bool
+    snapshot_id: str
+    tags: list[str]
+    file_count: int
+    total_size: int
+
+
+@dataclass
+class DiffEntry:
+    path: str
+    modifier: str
+
+
+@dataclass
+class DiffResult:
+    snapshot_id_1: str
+    snapshot_id_2: str
+    entries: list[DiffEntry]
+
+
+@dataclass
+class RepoStats:
+    total_size: int
+    total_file_count: int
+
+
+@dataclass
+class StatusReport:
+    repository: str
+    retention: RetentionPolicy
+    repo_stats: RepoStats | None
+    snapshots: list[Snapshot]
+    stale_threshold_hours: int
+    log_dir: str | None
+
+
 DEFAULT_STALE_THRESHOLD_HOURS = 25
 
 

@@ -16,15 +16,21 @@ from dorestic import (
     EXIT_ON_START_FAILED,
     BackupConfig,
     BackupResult,
+    DiffEntry,
+    DiffResult,
     DryRunPlan,
     DryRunScope,
     DryRunTarget,
     HostGroup,
+    RepoStats,
+    RestoreResult,
     ScopeConfig,
     ScopeResult,
     Snapshot,
     SnapshotFile,
+    StatusReport,
     TeeStream,
+    VerifyResult,
     acquire_lock,
     expand_depth_limited_path,
     find_config,
@@ -46,8 +52,9 @@ from dorestic.display import (
     format_size,
     is_stale,
     print_dry_run_plan,
+    print_status,
 )
-from dorestic.models import parse_snapshot_time
+from dorestic.models import RetentionPolicy, parse_snapshot_time
 
 
 # ── parse_comma_list ────────────────────────────────────────
@@ -1301,3 +1308,284 @@ class TestMakeLogPath:
         assert "backup-" in path
         assert path.endswith(".log")
         Path(path).unlink(missing_ok=True)
+
+
+# ── RepoStats / StatusReport models ────────────────────────
+
+
+class TestStatusModels:
+    def test_repo_stats(self) -> None:
+        stats = RepoStats(total_size=1024000, total_file_count=42)
+        assert stats.total_size == 1024000
+        assert stats.total_file_count == 42
+
+    def test_status_report(self) -> None:
+        snap = Snapshot(
+            id="abc123", short_id="abc123", tags=["db:container"],
+            time=datetime(2026, 7, 9, 2, 0, 0, tzinfo=timezone.utc),
+            paths=["/data"], hostname="host",
+        )
+        report = StatusReport(
+            repository="/backup",
+            retention=RetentionPolicy(),
+            repo_stats=RepoStats(total_size=5000, total_file_count=10),
+            snapshots=[snap],
+            stale_threshold_hours=25,
+            log_dir="/var/log/dorestic",
+        )
+        assert report.repository == "/backup"
+        assert report.repo_stats is not None
+        assert report.repo_stats.total_size == 5000
+        assert len(report.snapshots) == 1
+        assert report.log_dir == "/var/log/dorestic"
+
+    def test_status_report_no_stats(self) -> None:
+        report = StatusReport(
+            repository="/backup",
+            retention=RetentionPolicy(),
+            repo_stats=None,
+            snapshots=[],
+            stale_threshold_hours=25,
+            log_dir=None,
+        )
+        assert report.repo_stats is None
+        assert report.log_dir is None
+
+
+# ── print_status ────────────────────────────────────────────
+
+
+class TestPrintStatus:
+    def test_with_stats_and_snapshots(self, capsys: pytest.CaptureFixture[str]) -> None:
+        snap = Snapshot(
+            id="abc123", short_id="abc123", tags=["db:container"],
+            time=datetime(2026, 7, 9, 2, 0, 0, tzinfo=timezone.utc),
+            paths=["/data"], hostname="host",
+        )
+        report = StatusReport(
+            repository="/mnt/backup",
+            retention=RetentionPolicy(daily=7, weekly=4, monthly=12),
+            repo_stats=RepoStats(total_size=1024 * 1024 * 50, total_file_count=1234),
+            snapshots=[snap],
+            stale_threshold_hours=25,
+            log_dir=None,
+        )
+        now = datetime(2026, 7, 9, 11, 0, 0, tzinfo=timezone.utc)
+        print_status(report, now)
+        out = capsys.readouterr().out
+        assert "Repository: /mnt/backup" in out
+        assert "50.0 MiB" in out
+        assert "1,234" in out
+        assert "7 daily" in out
+        assert "db:container" in out
+        assert "9h ago" in out
+
+    def test_no_snapshots(self, capsys: pytest.CaptureFixture[str]) -> None:
+        report = StatusReport(
+            repository="/backup",
+            retention=RetentionPolicy(),
+            repo_stats=None,
+            snapshots=[],
+            stale_threshold_hours=25,
+            log_dir=None,
+        )
+        now = datetime(2026, 7, 9, 11, 0, 0, tzinfo=timezone.utc)
+        print_status(report, now)
+        out = capsys.readouterr().out
+        assert "No snapshots found." in out
+
+    def test_with_log_dir(self, capsys: pytest.CaptureFixture[str]) -> None:
+        report = StatusReport(
+            repository="/backup",
+            retention=RetentionPolicy(),
+            repo_stats=None,
+            snapshots=[],
+            stale_threshold_hours=25,
+            log_dir="/var/log/dorestic",
+        )
+        now = datetime(2026, 7, 9, 11, 0, 0, tzinfo=timezone.utc)
+        print_status(report, now)
+        out = capsys.readouterr().out
+        assert "Log dir:    /var/log/dorestic" in out
+
+    def test_stale_marker(self, capsys: pytest.CaptureFixture[str]) -> None:
+        snap = Snapshot(
+            id="abc123", short_id="abc123", tags=["old:container"],
+            time=datetime(2026, 7, 6, 2, 0, 0, tzinfo=timezone.utc),
+            paths=["/data"], hostname="host",
+        )
+        report = StatusReport(
+            repository="/backup",
+            retention=RetentionPolicy(),
+            repo_stats=None,
+            snapshots=[snap],
+            stale_threshold_hours=25,
+            log_dir=None,
+        )
+        now = datetime(2026, 7, 9, 11, 0, 0, tzinfo=timezone.utc)
+        print_status(report, now)
+        out = capsys.readouterr().out
+        assert "(!)" in out
+
+
+# ── Dorestic.validate ──────────────────────────────────────
+
+
+class TestDoresticValidate:
+    def test_warns_missing_log_dir(self) -> None:
+        config = BackupConfig(
+            repository="/repo", password_file="/pw",
+            log_dir="/nonexistent/path",
+        )
+        d = Dorestic(config)
+        issues = d.validate()
+        assert any("log_dir does not exist" in i for i in issues)
+
+    def test_warns_log_dir_not_directory(self, tmp_path: Path) -> None:
+        f = tmp_path / "not_a_dir"
+        f.write_text("x")
+        config = BackupConfig(
+            repository="/repo", password_file="/pw",
+            log_dir=str(f),
+        )
+        d = Dorestic(config)
+        issues = d.validate()
+        assert any("not a directory" in i for i in issues)
+
+    def test_no_issues_without_log_dir(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        issues = d.validate()
+        docker_issues = [i for i in issues if "Docker" not in i]
+        assert docker_issues == []
+
+
+# ── restore/verify/diff models ──────────────────────────────
+
+
+class TestRestoreResult:
+    def test_success(self) -> None:
+        result = RestoreResult(
+            success=True, target="/tmp/restore", snapshot_id="abc123",
+            file_count=42, total_size=1024000,
+        )
+        assert result.success is True
+        assert result.file_count == 42
+
+    def test_failure(self) -> None:
+        result = RestoreResult(
+            success=False, target="/tmp/restore", snapshot_id="abc123",
+            file_count=0, total_size=0,
+        )
+        assert result.success is False
+
+
+class TestVerifyResult:
+    def test_success(self) -> None:
+        result = VerifyResult(
+            success=True, snapshot_id="abc123", tags=["db:container"],
+            file_count=100, total_size=5000,
+        )
+        assert result.success is True
+        assert result.tags == ["db:container"]
+
+    def test_failure(self) -> None:
+        result = VerifyResult(
+            success=False, snapshot_id="abc123", tags=[],
+            file_count=0, total_size=0,
+        )
+        assert result.success is False
+
+
+class TestDiffModels:
+    def test_diff_entry(self) -> None:
+        entry = DiffEntry(path="/data/file.txt", modifier="+")
+        assert entry.path == "/data/file.txt"
+        assert entry.modifier == "+"
+
+    def test_diff_result(self) -> None:
+        entries = [
+            DiffEntry(path="/data/new.txt", modifier="+"),
+            DiffEntry(path="/data/old.txt", modifier="-"),
+        ]
+        result = DiffResult(
+            snapshot_id_1="aaa111", snapshot_id_2="bbb222",
+            entries=entries,
+        )
+        assert len(result.entries) == 2
+        assert result.snapshot_id_1 == "aaa111"
+
+    def test_diff_result_empty(self) -> None:
+        result = DiffResult(
+            snapshot_id_1="aaa111", snapshot_id_2="bbb222",
+            entries=[],
+        )
+        assert result.entries == []
+
+
+# ── Dorestic.restore ──────────────────────────────────────
+
+
+class TestDoresticRestore:
+    def test_resolve_failure(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        with patch("dorestic.api.list_snapshots", return_value=[]):
+            with pytest.raises(ValueError, match="No snapshot found"):
+                d.restore("nonexistent")
+
+    def test_default_target_from_tag(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db:container"]}]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.restore_snapshot", return_value=0) as mock_restore:
+                result = d.restore("db:container")
+        assert "restore" in result.target
+        assert "db-container" in result.target
+        assert mock_restore.called
+
+
+# ── Dorestic.diff ────────────────────────────────────────
+
+
+class TestDoresticDiff:
+    def test_resolve_failure_first(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        with patch("dorestic.api.list_snapshots", return_value=[]):
+            with pytest.raises(ValueError, match="No snapshot found"):
+                d.diff("nonexistent", "other")
+
+    def test_resolve_failure_second(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [{"id": "aaa111", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with pytest.raises(ValueError, match="No snapshot found"):
+                d.diff("db", "nonexistent")
+
+    def test_parses_diff_output(self) -> None:
+        config = BackupConfig(repository="/repo", password_file="/pw")
+        d = Dorestic(config)
+        raw = [
+            {"id": "aaa111", "short_id": "aaa111", "time": "2026-07-08T02:00:00Z", "tags": ["db"]},
+            {"id": "bbb222", "short_id": "bbb222", "time": "2026-07-09T02:00:00Z", "tags": ["db2"]},
+        ]
+        diff_output = (
+            "comparing snapshot aaa111 to bbb222\n"
+            "+ /data/new.txt\n"
+            "- /data/old.txt\n"
+            "M /data/changed.txt\n"
+            "Files:  1 new, 1 removed, 1 changed\n"
+            "Added: 1.234 MiB\n"
+            "Removed: 0.500 MiB"
+        )
+        with patch("dorestic.api.list_snapshots", return_value=raw):
+            with patch("dorestic.api.diff_snapshots", return_value=(0, diff_output, "")):
+                result = d.diff("aaa111", "bbb222")
+        assert len(result.entries) == 3
+        assert result.entries[0].modifier == "+"
+        assert result.entries[0].path == "/data/new.txt"
+        assert result.entries[1].modifier == "-"
+        assert result.entries[2].modifier == "M"

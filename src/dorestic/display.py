@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from dorestic.models import BackupConfig, DryRunPlan, DryRunScope, Snapshot
+from dorestic.models import (
+    BackupConfig,
+    DryRunPlan,
+    DryRunScope,
+    Snapshot,
+    StatusReport,
+)
 
 
 def format_freshness(dt: datetime, now: datetime) -> str:
@@ -81,6 +87,48 @@ def print_dry_run_plan(plan: DryRunPlan) -> None:
         print(f"host:{group.tag}")
         _print_scope(group)
         print()
+
+
+def print_status(report: StatusReport, now: datetime) -> None:
+    print(f"Repository: {report.repository}")
+    if report.repo_stats:
+        print(f"Size:       {format_size(report.repo_stats.total_size)}")
+        print(f"Files:      {report.repo_stats.total_file_count:,}")
+    print(
+        f"Retention:  {report.retention.daily} daily, "
+        f"{report.retention.weekly} weekly, "
+        f"{report.retention.monthly} monthly"
+    )
+    if report.log_dir:
+        print(f"Log dir:    {report.log_dir}")
+    print()
+
+    if not report.snapshots:
+        print("No snapshots found.")
+        return
+
+    by_tag: dict[str, list[Snapshot]] = {}
+    for snap in report.snapshots:
+        for tag in snap.tags or ["(untagged)"]:
+            by_tag.setdefault(tag, []).append(snap)
+
+    tag_w = max(len(t) for t in by_tag)
+    tag_w = max(tag_w, 3)
+
+    header = f"{'TAG':<{tag_w}}  {'LATEST':<19}  FRESHNESS"
+    print(header)
+    print("-" * len(header))
+
+    for tag in sorted(by_tag):
+        latest = max(s.time for s in by_tag[tag])
+        freshness = format_freshness(latest, now)
+        stale = is_stale(latest, now, report.stale_threshold_hours)
+        stale_marker = " (!)" if stale else ""
+        print(
+            f"{tag:<{tag_w}}  "
+            f"{latest.strftime('%Y-%m-%d %H:%M:%S'):<19}  "
+            f"{freshness}{stale_marker}"
+        )
 
 
 def print_tag_summary(

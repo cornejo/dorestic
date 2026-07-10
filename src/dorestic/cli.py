@@ -11,6 +11,7 @@ from dorestic.config import find_config
 from dorestic.display import (
     format_size,
     print_dry_run_plan,
+    print_status,
     print_tag_detail,
     print_tag_summary,
 )
@@ -111,6 +112,130 @@ def _cmd_init(args: argparse.Namespace) -> None:
         write_example_config(args.path)
 
 
+def _cmd_status(args: argparse.Namespace) -> None:
+    d = Dorestic.from_config_path(_resolve_config(args))
+    report = d.status()
+    now = datetime.now(timezone.utc)
+    print_status(report, now)
+
+
+def _cmd_check(args: argparse.Namespace) -> None:
+    d = Dorestic.from_config_path(_resolve_config(args))
+    ok = d.check()
+    if ok:
+        print("Repository integrity check passed.")
+    else:
+        print("Repository integrity check failed.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_config_validate(args: argparse.Namespace) -> None:
+    config_path = _resolve_config(args)
+    try:
+        from dorestic.config import validate_raw_config
+        import yaml
+        with open(config_path) as f:
+            raw = yaml.safe_load(f)
+        if not hasattr(raw, "keys"):
+            print(f"Error: {config_path} is not a YAML mapping", file=sys.stderr)
+            sys.exit(1)
+        validate_raw_config(raw)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        d = Dorestic.from_config_path(config_path)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    issues = d.validate()
+    if issues:
+        for issue in issues:
+            print(f"Warning: {issue}", file=sys.stderr)
+
+    print(f"Config: {config_path}")
+    print(f"Repository: {d.config.repository}")
+    print(f"Password file: {d.config.password_file}")
+    if d.config.log_dir:
+        print(f"Log dir: {d.config.log_dir}")
+    print(
+        f"Retention: {d.config.retention.daily} daily, "
+        f"{d.config.retention.weekly} weekly, "
+        f"{d.config.retention.monthly} monthly"
+    )
+    if d.config.host_groups:
+        print(f"Host groups: {', '.join(g.tag for g in d.config.host_groups)}")
+
+    if not issues:
+        print("OK")
+    else:
+        sys.exit(1)
+
+
+def _cmd_restore(args: argparse.Namespace) -> None:
+    d = Dorestic.from_config_path(_resolve_config(args))
+    target: str | None = args.target
+    try:
+        result = d.restore(args.snapshot, target=target, dry_run=args.dry_run)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.dry_run:
+        if result.success:
+            print(f"Dry run: would restore {result.snapshot_id[:8]} to {result.target}")
+        else:
+            print("Dry run: restore would fail.", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if result.success:
+        print(f"Restored to {result.target}")
+        print(f"  {result.file_count} files, {format_size(result.total_size)}")
+    else:
+        print("Restore failed.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_verify(args: argparse.Namespace) -> None:
+    d = Dorestic.from_config_path(_resolve_config(args))
+    ref: str | None = args.snapshot
+    try:
+        result = d.verify_snapshot(ref=ref)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    tags_str = ", ".join(result.tags) if result.tags else "(untagged)"
+    if result.success:
+        print(f"Verified snapshot {result.snapshot_id[:8]} ({tags_str})")
+        print(f"  {result.file_count} files, {format_size(result.total_size)}")
+    else:
+        print(
+            f"Verification failed for snapshot {result.snapshot_id[:8]} ({tags_str})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _cmd_diff(args: argparse.Namespace) -> None:
+    d = Dorestic.from_config_path(_resolve_config(args))
+    try:
+        result = d.diff(args.snapshot1, args.snapshot2)
+    except (ValueError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not result.entries:
+        print("No differences.")
+        return
+
+    for entry in result.entries:
+        print(f"{entry.modifier} {entry.path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dorestic",
@@ -170,6 +295,51 @@ def main() -> None:
         help="refresh existing config with latest template (old config saved as .bak)",
     )
 
+    subparsers.add_parser(
+        "status", help="show repository health: size, latest backups, retention",
+    )
+
+    subparsers.add_parser(
+        "check", help="run a repository integrity check",
+    )
+
+    subparsers.add_parser(
+        "config-validate",
+        help="validate config and Docker labels without running a backup",
+    )
+
+    restore_parser = subparsers.add_parser(
+        "restore",
+        help="restore from a snapshot to a staging directory",
+    )
+    restore_parser.add_argument(
+        "snapshot",
+        help="snapshot ID or tag name (uses latest snapshot for tag)",
+    )
+    restore_parser.add_argument(
+        "--target", "-t", default=None,
+        help="target directory (default: ./restore/<tag>/)",
+    )
+    restore_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="preview what would be restored without writing files",
+    )
+
+    verify_parser = subparsers.add_parser(
+        "verify-snapshot",
+        help="restore a snapshot to a temp dir to prove recoverability",
+    )
+    verify_parser.add_argument(
+        "snapshot", nargs="?", default=None,
+        help="snapshot ID or tag (default: random snapshot)",
+    )
+
+    diff_parser = subparsers.add_parser(
+        "diff", help="show what changed between two snapshots",
+    )
+    diff_parser.add_argument("snapshot1", help="first snapshot ID or tag")
+    diff_parser.add_argument("snapshot2", help="second snapshot ID or tag")
+
     args = parser.parse_args()
 
     commands = {
@@ -177,5 +347,11 @@ def main() -> None:
         "list": _cmd_list,
         "view": _cmd_view,
         "init": _cmd_init,
+        "status": _cmd_status,
+        "check": _cmd_check,
+        "config-validate": _cmd_config_validate,
+        "restore": _cmd_restore,
+        "verify-snapshot": _cmd_verify,
+        "diff": _cmd_diff,
     }
     commands[args.command](args)

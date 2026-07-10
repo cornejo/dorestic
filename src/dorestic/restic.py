@@ -99,6 +99,20 @@ def run_restic(
     return result.returncode
 
 
+def repo_stats(config: BackupConfig) -> dict[str, Any]:
+    exit_code, stdout, stderr = run_restic(
+        "stats", "--json", config=config, capture=True,
+    )
+    if exit_code != 0:
+        raise RuntimeError(
+            f"restic stats failed (exit {exit_code}): {stderr}"
+        )
+    if not stdout.strip():
+        return {}
+    result: dict[str, Any] = json.loads(stdout)
+    return result
+
+
 def list_snapshots(
     config: BackupConfig, tag: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -144,6 +158,30 @@ def iter_snapshot_files(
         raise RuntimeError(
             f"restic ls failed (exit {exit_code}): {stderr.strip()}"
         )
+
+
+def restore_snapshot(
+    config: BackupConfig, snapshot_id: str, target: str,
+    dry_run: bool = False,
+) -> int:
+    cmd = _build_restic_cmd(config)
+    cmd.extend(["-v", f"{target}:{target}"])
+    args = ["restore", snapshot_id, "--target", target]
+    if dry_run:
+        args.append("--dry-run")
+    cmd.extend([config.restic_image, *args])
+    log.debug("restic command: %s", " ".join(cmd))
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
+def diff_snapshots(
+    config: BackupConfig, id1: str, id2: str,
+) -> tuple[int, str, str]:
+    exit_code, stdout, stderr = run_restic(
+        "diff", id1, id2, config=config, capture=True,
+    )
+    return exit_code, stdout, stderr
 
 
 def run_scope_backup(

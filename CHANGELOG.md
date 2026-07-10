@@ -10,6 +10,12 @@
 - `dorestic list --tag <tag>` — show individual snapshots for a specific tag
 - `dorestic view <snapshot|tag>` — show files in a snapshot or latest for a tag
 - `dorestic backup --only <name>` — back up a single container or host group (skips global hooks, prune, and check)
+- `dorestic restore <id|tag>` — restore a snapshot to a staging directory (default `./restore/<tag>/`), with `--target` and `--dry-run`
+- `dorestic verify-snapshot [ref]` — restore a snapshot to a temp dir to prove recoverability (random snapshot if no ref given)
+- `dorestic diff <snap1> <snap2>` — show what changed between two snapshots (wraps `restic diff`, resolves tags to latest)
+- `dorestic status` — dashboard showing repository size, latest backup per scope, retention policy, and staleness
+- `dorestic check` — standalone repository integrity check (previously only ran as part of a full backup)
+- `dorestic config-validate` — validate config file and Docker container labels without running a backup
 - `dorestic backup --dry-run` — show what would be backed up without running hooks or restic
 - `dorestic backup -v` — verbose/debug output (resolved paths, mount mappings, restic commands)
 - `dorestic backup -q` — quiet mode (suppress output on success, print everything on failure)

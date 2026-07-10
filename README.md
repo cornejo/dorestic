@@ -93,6 +93,14 @@ dorestic backup -q              Quiet mode (suppress output on success, print on
 dorestic list                   Show snapshots grouped by tag with freshness
 dorestic list --tag <tag>       Show individual snapshots for a specific tag
 dorestic view <id|tag>          Show files in a snapshot (or latest for a tag)
+dorestic restore <id|tag>              Restore a snapshot to a staging directory
+dorestic restore <id|tag> --target DIR Restore to a specific directory
+dorestic restore <id|tag> --dry-run    Preview what would be restored
+dorestic verify-snapshot [ref]  Restore a snapshot to temp dir to prove recoverability
+dorestic diff <snap1> <snap2>   Show what changed between two snapshots
+dorestic status                 Show repository health: size, latest backups, retention
+dorestic check                  Run a repository integrity check
+dorestic config-validate        Validate config and Docker labels without running a backup
 dorestic init [PATH]            Write example config to PATH (default: ./)
 dorestic init --refresh         Refresh existing config with latest template
 ```
@@ -282,10 +290,49 @@ dorestic view my-db:container
 
 ### Restoring
 
-Restore is done directly via restic:
+Restore to a staging directory (default: `./restore/<tag>/`):
 
 ```bash
-restic restore --tag my-db:container latest --target /tmp/restore/
+# Restore latest snapshot for a tag
+dorestic restore my-db:container
+
+# Restore a specific snapshot by ID
+dorestic restore abc123de
+
+# Restore to a specific directory
+dorestic restore my-db:container --target /tmp/restore/
+
+# Preview what would be restored
+dorestic restore my-db:container --dry-run
+```
+
+Restores always go to a staging directory — never directly into running
+volumes. Copy files from the staging directory to their final location after
+reviewing them.
+
+### Verifying backups
+
+Prove that a snapshot is actually recoverable by restoring it to a temporary
+directory:
+
+```bash
+# Verify a random snapshot
+dorestic verify-snapshot
+
+# Verify a specific snapshot
+dorestic verify-snapshot my-db:container
+```
+
+The temp directory is automatically cleaned up after verification.
+
+### Comparing snapshots
+
+```bash
+# Show what changed between two snapshots
+dorestic diff abc123de def456ab
+
+# Compare latest snapshots of two tags
+dorestic diff my-db:container my-db:host
 ```
 
 Retention policy is configurable in `config.yml`. Default: 7 daily, 4 weekly,
@@ -439,6 +486,31 @@ print(f"Success: {result.success}")
 
 # Target a single container or host group
 result = d.backup(only="my-db")
+
+# Repository health check
+report = d.status()
+print(f"Repo size: {report.repo_stats.total_size}")
+
+# Integrity check
+if d.check():
+    print("Repository OK")
+
+# Validate config + Docker labels
+issues = d.validate()
+for issue in issues:
+    print(f"Warning: {issue}")
+
+# Restore a snapshot
+result = d.restore("my-db:container", target="/tmp/restore")
+
+# Verify a random snapshot is recoverable
+v = d.verify_snapshot()
+print(f"Verified {v.snapshot_id[:8]}: {v.file_count} files")
+
+# Compare two snapshots
+diff = d.diff("abc123", "def456")
+for entry in diff.entries:
+    print(f"{entry.modifier} {entry.path}")
 ```
 
 All methods return typed dataclasses (`Snapshot`, `SnapshotFile`, `BackupResult`)
