@@ -21,15 +21,31 @@ password_file: /etc/backup/restic-password
 
 # Command to run after the entire backup completes (optional)
 # Environment: $DORESTIC_EXIT_CODE, $DORESTIC_LOGFILE
-# The log file is deleted after on_complete returns — copy or upload it
-# inside the command if you want to keep it.
+# Without log_dir, the log file is deleted after on_complete returns —
+# copy or upload it inside the command if you want to keep it.
 # on_complete: /path/to/on_complete.sh
+
+# Directory for persistent backup logs (optional)
+# Each run writes a timestamped log file (e.g. backup-2026-07-09T030000.log).
+# Without this, a temporary log is created for on_complete and then deleted.
+# log_dir: /var/log/dorestic
+
+# Directory for temporary files during backup, verify, and restore (optional)
+# Defaults to /tmp, which is often a tmpfs (RAM-backed) on Linux.
+# If you work with large backups, point this at a disk-backed path
+# that only your user can access (e.g. /var/tmp/dorestic).
+# The directory must already exist — dorestic will not create it.
+# tmp_dir: /var/tmp/dorestic
 
 # Snapshot retention policy (optional, these are the defaults)
 # retention:
 #   daily: 7
 #   weekly: 4
 #   monthly: 12
+
+# Hours after which a tag's latest snapshot is considered stale (optional, default: 25)
+# Used by `dorestic list` to flag tags that haven't been backed up recently.
+# stale_threshold_hours: 25
 
 # Host-only backup groups — not tied to any Docker container (optional)
 # Each group gets its own tagged restic snapshot.
