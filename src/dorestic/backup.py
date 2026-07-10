@@ -33,7 +33,7 @@ from dorestic.models import (
     ScopeResult,
 )
 from dorestic.paths import resolve_host_paths
-from dorestic.restic import make_restic_hostname, run_restic, run_scope_backup
+from dorestic.restic import docker_rmtree, make_restic_hostname, run_restic, run_scope_backup
 
 log = logging.getLogger("backup")
 
@@ -400,6 +400,7 @@ def orchestrate_backup(
 
         return overall_exit
     finally:
+        docker_rmtree(config, str(staging_dir))
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 

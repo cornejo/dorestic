@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.1 — 2026-07-10
+
+### Fixed
+- Fix cleanup of root-owned temp files left by Docker-based restic restores; `verify` and `backup` now use Docker to remove container-created files before host-side cleanup
+
 ## v0.5.0 — 2026-07-10
 
 ### Added

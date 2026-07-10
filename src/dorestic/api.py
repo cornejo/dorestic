@@ -27,6 +27,7 @@ from dorestic.models import (
 )
 from dorestic.restic import (
     diff_snapshots,
+    docker_rmtree,
     forget_snapshots,
     iter_snapshot_files,
     list_snapshots,
@@ -210,6 +211,7 @@ class Dorestic:
                 total_size=total_size,
             )
         finally:
+            docker_rmtree(self.config, tmp_dir)
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def diff(self, ref1: str, ref2: str) -> DiffResult:
