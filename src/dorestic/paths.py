@@ -50,8 +50,14 @@ def resolve_host_paths(target: ContainerTarget) -> list[Path]:
     for spec in target.host_scope.paths:
         path, depth = resolve_host_path_spec(target.compose_dir, spec)
         if depth is not None:
-            resolved.extend(expand_depth_limited_path(path, depth))
+            expanded = expand_depth_limited_path(path, depth)
+            log.debug(
+                "%s: host spec %s → %s (@%d, %d files)",
+                target.name, spec, path, depth, len(expanded),
+            )
+            resolved.extend(expanded)
         elif path.exists():
+            log.debug("%s: host spec %s → %s", target.name, spec, path)
             resolved.append(path)
         else:
             log.warning("%s: host path %s does not exist", target.name, path)

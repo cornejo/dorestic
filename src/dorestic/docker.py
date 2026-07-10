@@ -82,6 +82,13 @@ def resolve_container_path(
 
     relative = container_path[len(best_mount.get("Destination", "")):]
     host_path = best_mount.get("Source", "") + relative
+    log.debug(
+        "%s: %s → %s (via mount %s)",
+        _get_container_name(container),
+        container_path,
+        host_path,
+        best_mount.get("Destination", ""),
+    )
     return Path(host_path)
 
 
@@ -208,4 +215,5 @@ def discover_targets(
             )
         )
 
+    log.debug("Discovered %d backup-enabled container(s)", len(targets))
     return targets
