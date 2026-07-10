@@ -1455,11 +1455,15 @@ class TestDoresticValidate:
         assert any("not a directory" in i for i in issues)
 
     def test_no_issues_without_log_dir(self) -> None:
-        config = BackupConfig(repository="/repo", password_file="/pw")
+        config = BackupConfig(
+            repository="/repo", password_file="/pw",
+            host_groups=[HostGroup(tag="docs", paths=["/data"])],
+        )
         d = Dorestic(config)
-        issues = d.validate()
-        docker_issues = [i for i in issues if "Docker" not in i]
-        assert docker_issues == []
+        with patch("dorestic.api.docker.DockerClient"):
+            with patch("dorestic.api.discover_targets", return_value=[]):
+                issues = d.validate()
+        assert issues == []
 
 
 # ── restore/verify/diff models ──────────────────────────────
