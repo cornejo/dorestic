@@ -161,6 +161,8 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
     print(f"Password file: {d.config.password_file}")
     if d.config.log_dir:
         print(f"Log dir: {d.config.log_dir}")
+    if d.config.tmp_dir != "/tmp":
+        print(f"Tmp dir: {d.config.tmp_dir}")
     print(
         f"Retention: {d.config.retention.daily} daily, "
         f"{d.config.retention.weekly} weekly, "
@@ -306,18 +308,47 @@ def _cmd_diff(args: argparse.Namespace) -> None:
         print(f"{entry.modifier} {entry.path}")
 
 
+_HELP_TEXT = """\
+Label-driven Docker backup using restic.
+
+commands:
+  backup             run a backup
+  list               show snapshots grouped by tag with freshness
+  view               show files in a snapshot or latest for a tag
+  restore            restore a snapshot to a staging directory
+  verify-snapshot    restore to a temp dir to prove recoverability
+  diff               show what changed between two snapshots
+  forget-tag         permanently delete all snapshots with given tag(s)
+  status             show repository health and latest backups
+  check              run a repository integrity check
+  config-validate    validate config and Docker labels
+  init               write example config or refresh existing config
+
+options:
+  -h, --help         show this help message and exit
+  --config, -c PATH  path to config.yml (default: auto-discover)
+
+Run 'dorestic <command> -h' for command-specific help.
+"""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dorestic",
-        description="Label-driven Docker backup using restic.",
+        add_help=False,
     )
     parser.add_argument(
         "--config", "-c", default=None,
-        help="path to config.yml (default: auto-discover)",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "-h", "--help", action="store_true",
+        help=argparse.SUPPRESS,
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
+    # ── backup ──
     backup_parser = subparsers.add_parser("backup", help="run a backup")
     backup_parser.add_argument(
         "--only", default=None,
@@ -337,6 +368,7 @@ def main() -> None:
         help="suppress output on success, print everything on failure",
     )
 
+    # ── snapshots ──
     list_parser = subparsers.add_parser(
         "list", help="show snapshots grouped by tag with freshness",
     )
@@ -353,31 +385,7 @@ def main() -> None:
         help="snapshot ID or tag name (uses latest snapshot for tag)",
     )
 
-    init_parser = subparsers.add_parser(
-        "init", help="write example config or refresh existing config",
-    )
-    init_parser.add_argument(
-        "path", nargs="?", default=".",
-        help="destination path (default: current directory)",
-    )
-    init_parser.add_argument(
-        "--refresh", action="store_true",
-        help="refresh existing config with latest template (old config saved as .bak)",
-    )
-
-    subparsers.add_parser(
-        "status", help="show repository health: size, latest backups, retention",
-    )
-
-    subparsers.add_parser(
-        "check", help="run a repository integrity check",
-    )
-
-    subparsers.add_parser(
-        "config-validate",
-        help="validate config and Docker labels without running a backup",
-    )
-
+    # ── restore / verify / diff ──
     restore_parser = subparsers.add_parser(
         "restore",
         help="restore from a snapshot to a staging directory",
@@ -410,6 +418,7 @@ def main() -> None:
     diff_parser.add_argument("snapshot1", help="first snapshot ID or tag")
     diff_parser.add_argument("snapshot2", help="second snapshot ID or tag")
 
+    # ── maintenance ──
     forget_tag_parser = subparsers.add_parser(
         "forget-tag",
         help="permanently delete all snapshots with given tag(s)",
@@ -423,7 +432,37 @@ def main() -> None:
         help="also forget all untagged snapshots",
     )
 
+    subparsers.add_parser(
+        "status", help="show repository health: size, latest backups, retention",
+    )
+
+    subparsers.add_parser(
+        "check", help="run a repository integrity check",
+    )
+
+    subparsers.add_parser(
+        "config-validate",
+        help="validate config and Docker labels without running a backup",
+    )
+
+    # ── setup ──
+    init_parser = subparsers.add_parser(
+        "init", help="write example config or refresh existing config",
+    )
+    init_parser.add_argument(
+        "path", nargs="?", default=".",
+        help="destination path (default: current directory)",
+    )
+    init_parser.add_argument(
+        "--refresh", action="store_true",
+        help="refresh existing config with latest template (old config saved as .bak)",
+    )
+
     args = parser.parse_args()
+
+    if args.help or args.command is None:
+        print(_HELP_TEXT, end="")
+        sys.exit(0)
 
     commands = {
         "backup": _cmd_backup,

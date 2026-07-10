@@ -19,7 +19,7 @@ CONFIG_FILENAME = "config.yml"
 KNOWN_TOP_LEVEL_KEYS = frozenset({
     "repository", "password_file", "restic_image",
     "on_start", "on_complete", "retention",
-    "stale_threshold_hours", "host_groups", "log_dir",
+    "stale_threshold_hours", "host_groups", "log_dir", "tmp_dir",
 })
 KNOWN_RETENTION_KEYS = frozenset({"daily", "weekly", "monthly"})
 KNOWN_HOST_GROUP_KEYS = frozenset({
@@ -115,6 +115,14 @@ def load_config(path: str) -> BackupConfig:
     )
 
     log_dir_val = data.get("log_dir")
+    tmp_dir_val = data.get("tmp_dir")
+
+    tmp_dir = str(tmp_dir_val) if tmp_dir_val is not None else "/tmp"
+    tmp_path = Path(tmp_dir)
+    if not tmp_path.exists():
+        raise ValueError(f"tmp_dir does not exist: {tmp_dir}")
+    if not tmp_path.is_dir():
+        raise ValueError(f"tmp_dir is not a directory: {tmp_dir}")
 
     return BackupConfig(
         repository=str(data["repository"]),
@@ -126,6 +134,7 @@ def load_config(path: str) -> BackupConfig:
         host_groups=host_groups,
         stale_threshold_hours=stale_threshold_hours,
         log_dir=str(log_dir_val) if log_dir_val is not None else None,
+        tmp_dir=str(tmp_dir_val) if tmp_dir_val is not None else "/tmp",
     )
 
 
@@ -233,6 +242,27 @@ def render_config(data: dict[str, Any]) -> str:
         lines.append(f"log_dir: {_yaml_str(str(data['log_dir']))}")
     else:
         lines.append("# log_dir: /var/log/dorestic")
+    lines.append("")
+
+    lines.append(
+        "# Directory for temporary files during backup, verify, and restore (optional)"
+    )
+    lines.append(
+        "# Defaults to /tmp, which is often a tmpfs (RAM-backed) on Linux."
+    )
+    lines.append(
+        "# If you work with large backups, point this at a disk-backed path"
+    )
+    lines.append(
+        "# that only your user can access (e.g. /var/tmp/dorestic)."
+    )
+    lines.append(
+        "# The directory must already exist — dorestic will not create it."
+    )
+    if "tmp_dir" in data:
+        lines.append(f"tmp_dir: {_yaml_str(str(data['tmp_dir']))}")
+    else:
+        lines.append("# tmp_dir: /var/tmp/dorestic")
     lines.append("")
 
     lines.append(

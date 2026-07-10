@@ -30,6 +30,13 @@ password_file: /etc/backup/restic-password
 # Without this, a temporary log is created for on_complete and then deleted.
 # log_dir: /var/log/dorestic
 
+# Directory for temporary files during backup, verify, and restore (optional)
+# Defaults to /tmp, which is often a tmpfs (RAM-backed) on Linux.
+# If you work with large backups, point this at a disk-backed path
+# that only your user can access (e.g. /var/tmp/dorestic).
+# The directory must already exist — dorestic will not create it.
+# tmp_dir: /var/tmp/dorestic
+
 # Snapshot retention policy (optional, these are the defaults)
 # retention:
 #   daily: 7

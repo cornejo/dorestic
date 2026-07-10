@@ -190,7 +190,7 @@ class Dorestic:
             import random
             snapshot = random.choice(snapshots)
 
-        tmp_dir = tempfile.mkdtemp(prefix="dorestic-verify-")
+        tmp_dir = tempfile.mkdtemp(prefix="dorestic-verify-", dir=self.config.tmp_dir)
         try:
             exit_code = restore_snapshot(
                 self.config, snapshot.id, tmp_dir,

@@ -139,6 +139,7 @@ password_file: /etc/backup/restic-password
 # on_start: /path/to/on_start.sh
 # on_complete: /path/to/on_complete.sh
 # log_dir: /var/log/dorestic
+# tmp_dir: /var/tmp/dorestic
 
 # retention:
 #   daily: 7
@@ -164,6 +165,7 @@ The password file is mounted read-only into the restic container via
 | `on_complete` | No | Command to run after the entire backup. Env: `$DORESTIC_EXIT_CODE`, `$DORESTIC_LOGFILE` |
 | `retention` | No | Snapshot retention policy (default: 7 daily, 4 weekly, 12 monthly) |
 | `log_dir` | No | Directory for persistent backup logs. Each run writes a timestamped file. Without this, a temp log is created for `on_complete` and then deleted. |
+| `tmp_dir` | No | Directory for temporary files during backup, verify, and restore (default: `/tmp`). On Linux, `/tmp` is often a RAM-backed tmpfs — if your backups are large, point this at a disk-backed path that only your user can access. The directory must already exist. |
 | `stale_threshold_hours` | No | Hours after which `dorestic list` flags a tag as stale (default: 25) |
 | `host_groups` | No | Host-only backup groups (see below) |
 

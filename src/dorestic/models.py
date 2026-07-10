@@ -191,3 +191,4 @@ class BackupConfig:
     host_groups: list[HostGroup] = field(default_factory=lambda: list[HostGroup]())
     stale_threshold_hours: int = DEFAULT_STALE_THRESHOLD_HOURS
     log_dir: str | None = None
+    tmp_dir: str = "/tmp"

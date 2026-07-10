@@ -58,7 +58,7 @@ class TeeStream(TextIOBase):
 def _lock_path_for(config: BackupConfig) -> Path:
     """Derive a per-repository lock file path."""
     repo_hash = hashlib.sha256(config.repository.encode()).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f"dorestic-{repo_hash}.lock"
+    return Path(config.tmp_dir) / f"dorestic-{repo_hash}.lock"
 
 
 def acquire_lock(config: BackupConfig) -> IO[str]:
@@ -329,7 +329,7 @@ def orchestrate_backup(
 
     client = docker.DockerClient.from_env()
     errors = 0
-    staging_dir = Path(tempfile.mkdtemp(prefix="backup-staging-"))
+    staging_dir = Path(tempfile.mkdtemp(prefix="backup-staging-", dir=config.tmp_dir))
 
     try:
         log.info("")
@@ -417,6 +417,7 @@ def make_log_path(config: BackupConfig) -> tuple[str, bool]:
         return str(path), True
     fd = tempfile.NamedTemporaryFile(
         mode="w", prefix="backup-", suffix=".log", delete=False,
+        dir=config.tmp_dir,
     )
     fd.close()
     return fd.name, False
