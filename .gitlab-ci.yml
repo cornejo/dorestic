@@ -51,11 +51,9 @@ pyright:
   image: ghcr.io/astral-sh/uv:python$PYTHON_VERSION-bookworm-slim
   variables:
     PYTHON_VERSION: "3.12"
-  before_script:
-    # pyright fetches its own Node build, which links against libatomic —
-    # not present in the slim image.
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends libatomic1
   script:
+    # pyright[nodejs] brings Node in as a wheel, so nothing is downloaded at
+    # runtime and the slim image needs no extra system libs.
     - uv sync --dev
     - uv run pyright
 
