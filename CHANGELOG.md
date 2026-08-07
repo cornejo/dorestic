@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.4 — 2026-08-07
+
+### Fixed
+- PyPI release workflow now takes the version from the tag directly rather than letting setuptools-scm shell out to `git describe`. The git-derived path could silently fall back to a placeholder version if git metadata were ever missing, as it did on the GitLab pipeline in v0.5.2 — but on PyPI a wrong version cannot be replaced, since a version number can never be reused
+
 ## v0.5.3 — 2026-08-07
 
 v0.5.2 was tagged but never published — its pipeline built the wrong version —

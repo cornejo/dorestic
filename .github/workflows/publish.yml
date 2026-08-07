@@ -10,7 +10,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # setuptools-scm derives the package version from the tag being built
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -20,8 +19,15 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      # SETUPTOOLS_SCM_PRETEND_VERSION takes the version straight from the tag,
+      # so the build cannot publish a version that disagrees with it. Without
+      # this, setuptools-scm shells out to `git describe` and any loss of git
+      # metadata silently yields pyproject's fallback_version instead — which is
+      # unrecoverable on PyPI, where a version number can never be reused.
       - name: Build package
-        run: python -m build
+        run: |
+          export SETUPTOOLS_SCM_PRETEND_VERSION="${GITHUB_REF_NAME#v}"
+          python -m build
 
       - uses: actions/upload-artifact@v4
         with:
