@@ -11,6 +11,9 @@
 ### Changed
 - Package version is now derived from the git tag via setuptools-scm instead of being hardcoded in `pyproject.toml`
 
+### Internal
+- Test suite no longer requires a `docker` binary to be present: the availability probe treats a missing binary as "unavailable" rather than raising, and the Docker-free unit tests mock out staging cleanup instead of shelling out
+
 ## v0.5.1 — 2026-07-10
 
 ### Fixed

@@ -17,9 +17,14 @@ from dorestic import BackupConfig
 # ── Skip markers for external dependencies ──────────────────
 
 def _docker_available() -> bool:
-    result = subprocess.run(
-        ["docker", "info"], capture_output=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, check=False,
+        )
+    except OSError:
+        # No docker binary at all (CI runners without Docker) — subprocess
+        # raises rather than returning non-zero, which would abort collection.
+        return False
     return result.returncode == 0
 
 

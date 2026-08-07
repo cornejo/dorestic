@@ -838,6 +838,9 @@ class TestOrchestrateBackup:
             patch("dorestic.backup.backup_host_group", side_effect=mock_backup_host_group),
             patch("dorestic.backup.run_restic", side_effect=mock_run_restic),
             patch("dorestic.backup.run_hook", side_effect=mock_run_hook),
+            # staging cleanup shells out to `docker run`; without this the test
+            # needs a real Docker binary on PATH
+            patch("dorestic.backup.docker_rmtree"),
         ):
             mock_docker.from_env.return_value = MagicMock()
             exit_code = orchestrate_backup(config, only=only)

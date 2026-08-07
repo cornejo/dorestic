@@ -1691,7 +1691,7 @@ class TestDoresticVerifySnapshot:
         raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
         with patch("dorestic.api.list_snapshots", return_value=raw):
             with patch("dorestic.api.restore_snapshot", return_value=0):
-                with patch("shutil.rmtree"):
+                with patch("shutil.rmtree"), patch("dorestic.api.docker_rmtree"):
                     result = d.verify_snapshot(ref="db")
         assert result.success is True
         assert result.snapshot_id == "abc123full"
@@ -1703,7 +1703,7 @@ class TestDoresticVerifySnapshot:
         raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
         with patch("dorestic.api.list_snapshots", return_value=raw):
             with patch("dorestic.api.restore_snapshot", return_value=0):
-                with patch("shutil.rmtree"):
+                with patch("shutil.rmtree"), patch("dorestic.api.docker_rmtree"):
                     result = d.verify_snapshot()
         assert result.success is True
 
@@ -1720,7 +1720,7 @@ class TestDoresticVerifySnapshot:
         raw = [{"id": "abc123full", "short_id": "abc123", "time": "2026-07-09T02:00:00Z", "tags": ["db"]}]
         with patch("dorestic.api.list_snapshots", return_value=raw):
             with patch("dorestic.api.restore_snapshot", return_value=1):
-                with patch("shutil.rmtree"):
+                with patch("shutil.rmtree"), patch("dorestic.api.docker_rmtree"):
                     result = d.verify_snapshot(ref="db")
         assert result.success is False
 

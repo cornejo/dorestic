@@ -208,8 +208,8 @@ compose project directory).
 | `backup.container.shell` | No | Shell used for container hooks (default: `sh`) |
 | `backup.host.paths` | No | Comma-separated paths relative to the compose project directory |
 | `backup.host.exclude` | No | Comma-separated restic exclude patterns for host scope |
-| `backup.host.on_start` | No | Command run on the host before host backup. Env: `$DORESTIC_TAG` |
-| `backup.host.on_complete` | No | Command run on the host after host backup. Env: `$DORESTIC_TAG`, `$DORESTIC_EXIT_CODE` |
+| `backup.host.on_start` | No | Command run on the host before host backup, from the compose project directory. Env: `$DORESTIC_TAG`, `$DORESTIC_COMPOSE_DIR` |
+| `backup.host.on_complete` | No | Command run on the host after host backup, from the compose project directory. Env: `$DORESTIC_TAG`, `$DORESTIC_EXIT_CODE`, `$DORESTIC_COMPOSE_DIR` |
 | `backup.suppress-mount-warning` | No | `"true"` to silence warnings when container paths fall back to `docker cp` (see below) |
 
 ### Container paths
@@ -237,6 +237,9 @@ depth:
 | `.` | Entire compose directory, recursive |
 | `../shared-config@2` | Sibling directory, 2 levels deep |
 
+`backup.host.on_start` and `backup.host.on_complete` run from this same
+directory, so relative paths behave consistently between hooks and path specs.
+
 ## Lifecycle
 
 For each container, the two scopes (container and host) are independent:
@@ -251,8 +254,12 @@ host.on_start ──────→ host backup ──────→ host.on_co
 - If `on_start` fails, the backup for that scope is skipped, but `on_complete`
   still runs with the failure code.
 - `on_complete` failures log a warning but don't affect the backup's exit code.
-- Hooks run inside the target container via `docker exec`, so they have access
-  to that container's tools (e.g. `pg_dumpall` in a postgres image).
+- `container.*` hooks run inside the target container via `docker exec`, so they
+  have access to that container's tools (e.g. `pg_dumpall` in a postgres image).
+- `host.*` hooks run on the host, with the compose project directory as their
+  working directory — the same base `backup.host.paths` resolves against, so a
+  relative path means the same thing in both. `$DORESTIC_COMPOSE_DIR` holds that
+  directory as an absolute path.
 
 ## Snapshots
 
