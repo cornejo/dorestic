@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.3 — 2026-08-07
+
+v0.5.2 was tagged but never published — its pipeline built the wrong version —
+so 0.5.3 is the first release carrying the v0.5.2 changes listed below.
+
+### Fixed
+- Release pipeline published `0.0.0` to the GitLab package registry instead of the tagged version. setuptools-scm shells out to the git CLI, which the build image did not have, so it fell back to a placeholder version. The published version is now taken directly from the tag
+
 ## v0.5.2 — 2026-08-07
 
 ### Fixed
