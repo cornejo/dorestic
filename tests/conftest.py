@@ -6,6 +6,7 @@ import uuid
 import warnings
 from collections.abc import Generator
 from pathlib import Path
+from typing import TypeVar, cast
 
 import docker
 import pytest
@@ -22,9 +23,52 @@ def _docker_available() -> bool:
     return result.returncode == 0
 
 
-requires_docker: pytest.MarkDecorator = pytest.mark.skipif(
+_docker_skip: pytest.MarkDecorator = pytest.mark.skipif(
     not _docker_available(), reason="Docker daemon not available"
 )
+
+_T = TypeVar("_T")
+
+
+def requires_docker(obj: _T) -> _T:
+    """Tag a test with the `docker` marker and skip it when no daemon is reachable.
+
+    Applying both means `-m docker` selects these tests even on a host without
+    Docker (where they report as skipped rather than silently vanishing).
+    """
+    return cast("_T", _docker_skip(pytest.mark.docker(obj)))
+
+
+# Fixtures whose use implies an external dependency. Markers are derived from
+# these at collection time so `-m docker` / `-m restic` stay correct as tests are
+# added, without needing a decorator on every new class.
+_DOCKER_FIXTURES = frozenset({
+    "docker_client",
+    "shared_tmp_dir",
+    "docker_visible_tmp",
+    "test_container",
+    "test_container_with_hooks",
+    "test_container_failing_hook",
+    "test_container_no_mount",
+    "test_container_multi_scope",
+})
+_RESTIC_FIXTURES = frozenset({
+    "restic_repo",
+    "restic_password_file",
+    "backup_config",
+})
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        fixtures = set(getattr(item, "fixturenames", ()))
+        needs_restic = bool(fixtures & _RESTIC_FIXTURES)
+        if needs_restic:
+            item.add_marker(pytest.mark.restic)
+        # restic is invoked through its official Docker image, so anything
+        # needing restic needs Docker too.
+        if needs_restic or fixtures & _DOCKER_FIXTURES:
+            item.add_marker(pytest.mark.docker)
 
 TEST_LABEL_PREFIX = "backup-test"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

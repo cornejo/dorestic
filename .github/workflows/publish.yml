@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives the package version from the tag being built
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

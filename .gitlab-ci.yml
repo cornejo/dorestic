@@ -1,0 +1,85 @@
+# Tests, plus publishing to this instance's own PyPI package registry.
+# Public PyPI releases go out from GitHub (.github/workflows/publish.yml):
+# PyPI trusted publishing accepts gitlab.com as an OIDC issuer but not
+# self-hosted GitLab instances, so tags are also pushed to the GitHub remote.
+stages:
+  - test
+  - build
+  - publish
+
+default:
+  interruptible: true
+
+variables:
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  # setuptools-scm derives the version from the git tag, so the default shallow
+  # clone (GIT_DEPTH=20, no tag history) would yield a wrong version.
+  GIT_DEPTH: "0"
+
+.uv-job: &uv-job
+  cache:
+    key:
+      files:
+        - uv.lock
+      prefix: uv-$PYTHON_VERSION
+    paths:
+      - .uv-cache
+  after_script:
+    - uv cache prune --ci
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# --- test -------------------------------------------------------------------
+# No dind on these runners, so Docker/restic-backed tests are deselected with
+# `-m "not docker"` and run locally instead: `uv run pytest -m docker`.
+
+test:
+  <<: *uv-job
+  stage: test
+  image: ghcr.io/astral-sh/uv:python$PYTHON_VERSION-bookworm-slim
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.12", "3.13"]
+  script:
+    - uv sync --dev
+    - uv run pytest -m "not docker" -v
+
+pyright:
+  <<: *uv-job
+  stage: test
+  image: ghcr.io/astral-sh/uv:python$PYTHON_VERSION-bookworm-slim
+  variables:
+    PYTHON_VERSION: "3.12"
+  script:
+    - uv sync --dev
+    - uv run pyright
+
+# --- build / publish on v* tags --------------------------------------------
+
+build:
+  stage: build
+  image: python:3.12-slim
+  script:
+    - pip install build
+    - python -m build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+
+publish:
+  stage: publish
+  image: python:3.12-slim
+  needs: ["build"]
+  variables:
+    TWINE_USERNAME: gitlab-ci-token
+    TWINE_PASSWORD: $CI_JOB_TOKEN
+    TWINE_REPOSITORY_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/pypi"
+  script:
+    - pip install twine
+    - twine upload dist/*
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/

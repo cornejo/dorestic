@@ -74,11 +74,17 @@ def acquire_lock(config: BackupConfig) -> IO[str]:
     return lock_fd
 
 
-def run_hook(command: str, env: dict[str, str] | None = None) -> int:
+def run_hook(
+    command: str,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> int:
+    """Run a host hook. `cwd` sets the working directory — for container targets
+    this is the compose project dir, matching how host.paths are resolved."""
     hook_env = os.environ.copy()
     if env:
         hook_env.update(env)
-    result = subprocess.run(["sh", "-c", command], env=hook_env)
+    result = subprocess.run(["sh", "-c", command], env=hook_env, cwd=cwd)
     return result.returncode
 
 
@@ -94,6 +100,11 @@ def backup_container(
     host_paths = resolve_host_paths(target)
 
     tag_env = {"DORESTIC_TAG": target.name}
+    # Host hooks additionally get the compose dir, both as cwd and in the env so
+    # a hook can build absolute paths. Container hooks don't — it's a host path.
+    host_env = dict(tag_env)
+    if target.compose_dir:
+        host_env["DORESTIC_COMPOSE_DIR"] = target.compose_dir
 
     container_on_start_ok = True
     if target.container_scope and target.container_scope.on_start:
@@ -115,7 +126,11 @@ def backup_container(
     host_on_start_ok = True
     if target.host_scope and target.host_scope.on_start:
         log.info("  host.on_start: %s", target.host_scope.on_start)
-        code = run_hook(target.host_scope.on_start, env=tag_env)
+        code = run_hook(
+            target.host_scope.on_start,
+            env=host_env,
+            cwd=target.compose_dir,
+        )
         if code != 0:
             log.error(
                 "  host.on_start failed (exit %d), skipping host backup", code
@@ -175,7 +190,8 @@ def backup_container(
         log.info("  host.on_complete: %s", target.host_scope.on_complete)
         code = run_hook(
             target.host_scope.on_complete,
-            env={**tag_env, "DORESTIC_EXIT_CODE": str(host_result.exit_code)},
+            env={**host_env, "DORESTIC_EXIT_CODE": str(host_result.exit_code)},
+            cwd=target.compose_dir,
         )
         if code != 0:
             log.warning("  host.on_complete failed (exit %d)", code)

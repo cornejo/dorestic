@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, devel]
+    branches: [main]
   pull_request:
-    branches: [main, devel]
+    branches: [main]
 
 jobs:
   test:
@@ -14,6 +14,9 @@ jobs:
         python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # setuptools-scm reads the version from git tags
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -22,5 +25,24 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      # Docker/restic-backed tests are deselected; they run locally.
       - name: Run unit tests
-        run: uv run pytest tests/test_unit.py -v
+        run: uv run pytest -m "not docker" -v
+
+  pyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm reads the version from git tags
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Type check
+        run: uv run pyright

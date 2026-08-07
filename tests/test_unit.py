@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -248,6 +249,29 @@ class TestRunHook:
         out = tmp_path / "out.txt"
         run_hook(f"echo $DORESTIC_TEST_MARKER > {out}")
         assert out.read_text().strip() == "inherited"
+
+    def test_cwd_defaults_to_inherited(self, tmp_path: Path):
+        """Without cwd, the hook runs wherever dorestic was launched from."""
+        out = tmp_path / "out.txt"
+        run_hook(f"pwd > {out}")
+        assert out.read_text().strip() == os.getcwd()
+
+    def test_cwd_sets_working_directory(self, tmp_path: Path):
+        project = tmp_path / "compose_project"
+        project.mkdir()
+        out = tmp_path / "out.txt"
+        run_hook(f"pwd > {out}", cwd=str(project))
+        assert out.read_text().strip() == os.path.realpath(project)
+
+    def test_cwd_makes_relative_paths_project_relative(self, tmp_path: Path):
+        """A hook's relative paths resolve against the compose dir, matching
+        how host.paths specs are resolved."""
+        project = tmp_path / "compose_project"
+        project.mkdir()
+        (project / "marker.txt").write_text("found me")
+        out = tmp_path / "out.txt"
+        assert run_hook(f"cat ./marker.txt > {out}", cwd=str(project)) == 0
+        assert out.read_text().strip() == "found me"
 
 
 # ── TeeStream ──────────────────────────────────────────────

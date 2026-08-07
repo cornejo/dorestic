@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dorestic"
-version = "0.5.1"
+dynamic = ["version"]
 description = "A label-driven backup system for Docker containers using restic"
 requires-python = ">=3.12"
 license = "Apache-2.0"
@@ -36,11 +36,20 @@ Funding = "https://ko-fi.com/rdacted"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.411",
     "pytest>=8.0",
 ]
 
 [project.scripts]
 dorestic = "dorestic.cli:main"
+
+[tool.setuptools_scm]
+# Version comes from the git tag: v0.5.1 -> 0.5.1. Untagged commits get a
+# .devN version. no-local-version drops the +g<sha> suffix, which PyPI rejects.
+local_scheme = "no-local-version"
+# Used only when there's no git metadata and no PKG-INFO (e.g. a bare source
+# copy); a real build from a checkout or sdist never hits this.
+fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
 where = ["src"]

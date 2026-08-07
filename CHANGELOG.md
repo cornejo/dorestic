@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.2 — 2026-08-07
+
+### Fixed
+- Host hooks (`host.on_start`, `host.on_complete`) now run with the compose project directory as their working directory, matching how `host.paths` specs are resolved. Previously they inherited whatever directory dorestic was launched from, so a relative path meant something different to a hook than to a path spec
+
+### Added
+- `DORESTIC_COMPOSE_DIR` is set for host hooks on container targets, so a hook can build absolute paths without hardcoding the project location. Container hooks don't receive it — it names a host path
+
+### Changed
+- Package version is now derived from the git tag via setuptools-scm instead of being hardcoded in `pyproject.toml`
+
 ## v0.5.1 — 2026-07-10
 
 ### Fixed
