@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -25,9 +28,62 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      # Docker/restic-backed tests are deselected; they run locally.
+      # The Docker-backed half runs in the `integration` job below, which needs
+      # a daemon; this job is the part that runs anywhere.
       - name: Run unit tests
         run: uv run pytest -m "not docker" -v
+
+  # The Docker/restic-backed tests, which GitLab CI cannot run: its runners are
+  # non-privileged docker executors with no daemon socket and no dind. A
+  # GitHub-hosted runner is a VM with Docker Engine installed, and the job runs
+  # directly on it rather than inside a container — so the daemon shares this
+  # filesystem and bind mounts out of the workspace resolve natively. Nothing
+  # needs to be privileged or mounted for this to work.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm reads the version from git tags
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      # Pull up front so a registry hiccup fails as itself rather than as a
+      # confusing test error partway through the suite.
+      - name: Pull test images
+        run: |
+          docker pull alpine:latest
+          docker pull restic/restic:latest
+
+      # These tests skip themselves when the daemon cannot do what they need,
+      # which on a correctly provisioned runner would mean silently testing
+      # nothing. Fail the job instead.
+      - name: Check Docker is usable
+        run: |
+          uv run python -c "
+          import sys
+          from tests.conftest import docker_unusable_reason
+          reason = docker_unusable_reason()
+          if reason:
+              sys.exit(f'Docker is not usable on this runner: {reason}')
+          print('Docker preflight OK')
+          "
+
+      - name: Run Docker and restic tests
+        run: uv run pytest -m docker -v --strict-markers
+
+      # A green run over zero tests is the failure this job exists to avoid.
+      - name: Assert tests were actually selected
+        run: |
+          uv run pytest -m docker --collect-only -q | tail -1 \
+            | grep -qE "^[1-9][0-9]*(/[0-9]+)? tests? collected" \
+            || { echo "No Docker-marked tests were collected"; exit 1; }
 
   pyright:
     runs-on: ubuntu-latest

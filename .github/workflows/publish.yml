@@ -4,6 +4,9 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,6 +21,19 @@ jobs:
 
       - name: Install build tools
         run: pip install build
+
+      # A PyPI version number can never be reused, so nothing unverified gets
+      # built. This does not depend on the GitLab pipeline having passed — the
+      # tag can reach this remote on its own.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: |
+          uv sync --dev
+          uv run pytest -m "not docker" -v
+          uv run pytest -m docker -v --strict-markers
 
       # SETUPTOOLS_SCM_PRETEND_VERSION takes the version straight from the tag,
       # so the build cannot publish a version that disagrees with it. Without
@@ -46,4 +62,7 @@ jobs:
           name: dist
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Pinned to a commit, not the moving release/v1 branch: this is the one
+      # step holding id-token: write against the PyPI project, so what runs here
+      # should change only when we change it. Currently v1.14.2.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33

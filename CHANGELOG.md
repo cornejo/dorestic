@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Internal
+- The Docker and restic tests now run in CI on GitHub, where a hosted runner is a VM with a real daemon. GitLab's runners are non-privileged docker executors with no socket and no dind, so they keep running `-m "not docker"` only
+- The PyPI publish workflow runs the full test suite before building. A PyPI version number can never be reused, and a tag can reach that remote without the GitLab pipeline having passed
+- `pypa/gh-action-pypi-publish` is pinned to a commit rather than the moving `release/v1` branch — it is the only step holding `id-token: write` against the PyPI project
+
 ## v0.6.0 — 2026-09-29
 
 ### Changed
