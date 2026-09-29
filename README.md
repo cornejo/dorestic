@@ -251,8 +251,15 @@ host.on_start ──────→ host backup ──────→ host.on_co
 
 - Each scope runs independently — a failing `container.on_start` does not
   affect the host scope, and vice versa.
+- Paths are resolved *after* `on_start`, so a hook may create the very files
+  being backed up. This matters most for a path that is not on a mount: dorestic
+  collects it with `docker cp`, which would otherwise copy a dump before the
+  hook wrote it.
 - If `on_start` fails, the backup for that scope is skipped, but `on_complete`
   still runs with the failure code.
+- A scope that is configured but whose paths all resolve to nothing is a
+  **failure** (exit 11), not a skip — an empty backup should never report
+  success to a healthcheck.
 - `on_complete` failures log a warning but don't affect the backup's exit code.
 - `container.*` hooks run inside the target container via `docker exec`, so they
   have access to that container's tools (e.g. `pg_dumpall` in a postgres image).
@@ -567,15 +574,22 @@ instead of raw dicts or exit codes. Nothing in the library path calls `sys.exit`
 ## Testing
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest -v
 ```
 
-Tests require a running Docker daemon and the `restic/restic:latest` image.
-Unit tests (no Docker) can be run in isolation:
+The suite splits in two by marker. The Docker-marked half needs a daemon that
+can bind-mount directories out of the working tree and pull
+`restic/restic:latest`; where that is unavailable those tests skip, naming the
+reason. The rest run anywhere:
 
 ```bash
-uv run pytest tests/test_unit.py -v
+uv run pytest -m "not docker" -v   # pure Python, no daemon
+uv run pytest -m docker -v         # Docker- and restic-backed
 ```
+
+CI runs `-m "not docker"` only. The Docker-marked tests start sibling
+containers and bind-mount out of the working tree, which a stock
+non-privileged docker-executor runner cannot do, so they are run locally.
 
 ## File Structure
 

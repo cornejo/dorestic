@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any, Literal, overload
@@ -27,6 +28,49 @@ def make_restic_hostname(scope: str, tag: str) -> str:
     prefix = base[: MAX_HOSTNAME_LEN - 9]
     suffix = hashlib.sha256(base.encode()).hexdigest()[:8]
     return f"{prefix}-{suffix}"
+
+
+def _run_streaming(cmd: list[str]) -> int:
+    """Run a command, relaying its output through sys.stdout.
+
+    subprocess cannot write to a TeeStream directly — it needs a real file
+    descriptor — so without this the restic output would bypass the log file
+    and `backup -q` entirely, going straight to the inherited fd 1/2.
+    stderr is merged into stdout to keep the log chronological.
+    """
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        if proc.stdout is None:
+            raise RuntimeError("Failed to capture output from restic")
+        for line in proc.stdout:
+            sys.stdout.write(line)
+        sys.stdout.flush()
+        return proc.wait()
+
+
+def _collapse_mounts(paths: list[Path]) -> list[str]:
+    """Reduce a path list to the smallest set of directories covering it.
+
+    A depth-limited host spec (`dir@2`) expands to one entry per file, and a
+    bind mount each would overflow the command line on any real tree. Mounting
+    the containing directories instead covers them in a handful of mounts;
+    restic still reads only the paths it is given as arguments.
+    """
+    dirs: set[Path] = set()
+    for path in paths:
+        dirs.add(path if path.is_dir() else path.parent)
+
+    minimal: list[Path] = []
+    # Shortest paths first, so an ancestor is always seen before its children.
+    for candidate in sorted(dirs, key=lambda p: (len(p.parts), str(p))):
+        if not any(candidate == m or m in candidate.parents for m in minimal):
+            minimal.append(candidate)
+    return [str(p) for p in minimal]
 
 
 def _build_restic_cmd(config: BackupConfig) -> list[str]:
@@ -83,20 +127,15 @@ def run_restic(
         cmd.extend(["-h", hostname])
 
     if mount_paths:
-        mounted: set[str] = set()
-        for path in mount_paths:
-            path_str = str(path)
-            if path_str not in mounted:
-                cmd.extend(["-v", f"{path_str}:{path_str}:ro"])
-                mounted.add(path_str)
+        for path_str in _collapse_mounts(mount_paths):
+            cmd.extend(["-v", f"{path_str}:{path_str}:ro"])
 
     cmd.extend([config.restic_image, *args])
     log.debug("restic command: %s", " ".join(cmd))
     if capture:
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.returncode, result.stdout.strip(), result.stderr.strip()
-    result = subprocess.run(cmd)
-    return result.returncode
+    return _run_streaming(cmd)
 
 
 def repo_stats(config: BackupConfig) -> dict[str, Any]:
@@ -171,8 +210,7 @@ def restore_snapshot(
         args.append("--dry-run")
     cmd.extend([config.restic_image, *args])
     log.debug("restic command: %s", " ".join(cmd))
-    result = subprocess.run(cmd)
-    return result.returncode
+    return _run_streaming(cmd)
 
 
 def docker_rmtree(config: BackupConfig, path: str) -> None:

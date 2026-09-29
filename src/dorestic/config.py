@@ -65,6 +65,10 @@ def load_config(path: str) -> BackupConfig:
 
     data: dict[str, Any] = _as_dict(raw, f"Config file {path} must be a YAML mapping")
 
+    # Run the same key check as `config-validate`, so a misspelled key fails the
+    # backup instead of silently falling back to a default.
+    validate_raw_config(data)
+
     if "repository" not in data:
         raise ValueError(f"Config file {path}: missing required field 'repository'")
     if "password_file" not in data:
@@ -143,6 +147,11 @@ def validate_raw_config(data: dict[str, Any]) -> None:
 
     Raises ValueError listing any unrecognized keys.
     """
+    # The plural form is the one typo worth naming explicitly; it would
+    # otherwise arrive as an anonymous "unknown key".
+    if "excludes" in data:
+        raise ValueError("Config uses 'excludes' (plural) — use 'exclude' instead")
+
     unknown = set(data.keys()) - KNOWN_TOP_LEVEL_KEYS
     if unknown:
         raise ValueError(
@@ -160,6 +169,11 @@ def validate_raw_config(data: dict[str, Any]) -> None:
     for group in data.get("host_groups", []):
         if not hasattr(group, "keys"):
             continue
+        if "excludes" in group:
+            raise ValueError(
+                f"host_groups entry '{group.get('tag', '?')}' uses 'excludes' "
+                "(plural) — use 'exclude' instead"
+            )
         group_unknown = set(group.keys()) - KNOWN_HOST_GROUP_KEYS
         if group_unknown:
             tag = group.get("tag", "?")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -9,16 +10,27 @@ from docker.models.containers import Container
 DEFAULT_LABEL_PREFIX = "backup"
 DEFAULT_RESTIC_IMAGE = "restic/restic:latest"
 EXIT_ON_START_FAILED = 10
+EXIT_NO_PATHS_RESOLVED = 11
+
+# Trims a sub-second fraction to the six digits fromisoformat accepts, leaving
+# any trailing UTC offset (or "Z") in group 2 untouched.
+_NANOS = re.compile(r"^(.*?\.\d{1,6})\d*(.*)$")
 
 
 def parse_snapshot_time(time_str: str) -> datetime:
-    cleaned = time_str.rstrip("Z")
-    if "." in cleaned:
-        base, frac = cleaned.rsplit(".", 1)
-        frac = frac[:6]
-        cleaned = f"{base}.{frac}"
-        return datetime.fromisoformat(cleaned).replace(tzinfo=timezone.utc)
-    return datetime.fromisoformat(cleaned).replace(tzinfo=timezone.utc)
+    """Parse a restic snapshot timestamp into an aware UTC datetime.
+
+    Restic emits RFC 3339 with the offset of whichever machine wrote the
+    snapshot and nanosecond precision, so the fraction is truncated and the
+    offset is *converted* rather than overwritten. A timestamp carrying no
+    offset at all is assumed to be UTC.
+    """
+    m = _NANOS.match(time_str)
+    cleaned = m.group(1) + m.group(2) if m else time_str
+    parsed = datetime.fromisoformat(cleaned)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 @dataclass

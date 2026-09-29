@@ -1,35 +1,166 @@
 from __future__ import annotations
 
+import functools
 import shutil
 import subprocess
 import uuid
 import warnings
 from collections.abc import Generator
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import docker
+import docker.errors
 import pytest
 from docker.models.containers import Container
 
 from dorestic import BackupConfig
 
+TEST_LABEL_PREFIX = "backup-test"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RESTIC_IMAGE = "restic/restic:latest"
+
+
+# ── container creation ─────────────────────────────────────
+
+
+def start_test_container(
+    client: docker.DockerClient,
+    *,
+    labels: dict[str, str],
+    binds: dict[Path, str] | None = None,
+    image: str = "alpine:latest",
+    command: str = "sleep 3600",
+) -> Container:
+    """Start a detached test container, bind-mounting host paths by path.
+
+    Deliberately the low-level API rather than `client.containers.run(volumes=)`.
+    The high-level call sends the legacy top-level `Volumes` map alongside
+    `HostConfig.Binds` — that map declares *anonymous volumes*, which these tests
+    never want, and a socket proxy enforcing a no-volumes policy rejects the
+    whole request on account of it. Binds alone say exactly what is meant: mount
+    this host path at this container path.
+
+    Every bind source must live under the project root, so a daemon that shares
+    this filesystem resolves it and the whole tree can be cleaned up afterwards.
+    """
+    for host in binds or {}:
+        assert PROJECT_ROOT in host.parents, (
+            f"bind source {host} is outside the project root"
+        )
+
+    # docker-py's low-level API carries no type information.
+    api: Any = client.api
+    host_config: dict[str, Any] = api.create_host_config(
+        binds={
+            str(host): {"bind": container_path, "mode": "rw"}
+            for host, container_path in (binds or {}).items()
+        }
+    )
+    created: dict[str, str] = api.create_container(
+        image,
+        command=command,
+        labels=labels,
+        host_config=host_config,
+        detach=True,
+    )
+    container: Container = client.containers.get(created["Id"])
+    container.start()
+    return container
+
+
+def stop_test_container(container: Container) -> None:
+    """Best-effort teardown; a test that already removed it must not fail here."""
+    try:
+        container.stop(timeout=1)
+    except Exception:
+        pass
+    try:
+        container.remove(force=True)
+    except Exception:
+        pass
+
+
 # ── Skip markers for external dependencies ──────────────────
 
-def _docker_available() -> bool:
+@functools.cache
+def docker_unusable_reason() -> str | None:
+    """Return why Docker can't run these tests, or None if it can.
+
+    A reachable daemon is not enough. Every Docker-backed test here bind-mounts
+    a directory out of the repository, and that fails in two ways a plain
+    `docker info` cannot see:
+
+      * a socket proxy or daemon policy that refuses volumes outright, and
+      * a *sibling* daemon, where the job's own path for the workspace is not
+        the path the daemon resolves — the mount silently lands on an empty or
+        wrong directory.
+
+    So the probe actually mounts a file and reads it back. Getting this wrong in
+    either direction is expensive: too weak and the suite reports dozens of
+    confusing errors, too strong and real breakage is hidden behind a skip.
+    """
     try:
-        result = subprocess.run(
-            ["docker", "info"], capture_output=True, check=False,
-        )
+        info = subprocess.run(["docker", "info"], capture_output=True, check=False)
     except OSError:
-        # No docker binary at all (CI runners without Docker) — subprocess
-        # raises rather than returning non-zero, which would abort collection.
-        return False
-    return result.returncode == 0
+        # No docker binary at all — subprocess raises rather than returning
+        # non-zero, which would abort collection.
+        return "no docker binary on PATH"
+    if info.returncode != 0:
+        return "docker daemon not reachable"
+
+    # Under the project root, like every mount the fixtures make, and inside the
+    # gitignored tmp/ so a crashed run leaves nothing tracked behind.
+    tmp_root = PROJECT_ROOT / "tmp"
+    tmp_root.mkdir(exist_ok=True)
+    probe_dir = tmp_root / f".probe-{uuid.uuid4().hex[:8]}"
+    probe_dir.mkdir()
+    sentinel = uuid.uuid4().hex
+    container: Container | None = None
+    try:
+        (probe_dir / "probe").write_text(sentinel)
+        # Exercise the same path the fixtures take, so the probe's answer is
+        # actually predictive of whether they will work.
+        client = docker.DockerClient.from_env()
+        try:
+            container = start_test_container(
+                client,
+                labels={},
+                binds={probe_dir: "/probe"},
+                command="cat /probe/probe",
+            )
+            container.wait(timeout=30)
+            output = container.logs(stdout=True, stderr=False)
+        except docker.errors.DockerException as e:
+            return f"cannot bind-mount the workspace: {e}"
+        finally:
+            if container is not None:
+                stop_test_container(container)
+            client.close()
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+        # Only remove tmp/ if this probe is all that was in it.
+        try:
+            tmp_root.rmdir()
+        except OSError:
+            pass
+
+    if output.decode().strip() != sentinel:
+        return (
+            "bind mount resolved to the wrong directory — the daemon sees a "
+            "different filesystem than this process (sibling-container runner "
+            "without a matching builds_dir?)"
+        )
+    return None
+
+
+def _docker_available() -> bool:
+    return docker_unusable_reason() is None
 
 
 _docker_skip: pytest.MarkDecorator = pytest.mark.skipif(
-    not _docker_available(), reason="Docker daemon not available"
+    not _docker_available(),
+    reason=f"Docker unusable: {docker_unusable_reason()}",
 )
 
 _T = TypeVar("_T")
@@ -75,9 +206,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if needs_restic or fixtures & _DOCKER_FIXTURES:
             item.add_marker(pytest.mark.docker)
 
-TEST_LABEL_PREFIX = "backup-test"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RESTIC_IMAGE = "restic/restic:latest"
 
 
 # ── Helpers ────────────────────────────────────────────────
@@ -160,8 +288,9 @@ def tmp_path_with_files(tmp_path: Path) -> Path:
 @pytest.fixture
 def docker_client() -> docker.DockerClient:
     """Return a Docker client, skip if unavailable."""
-    if not _docker_available():
-        pytest.skip("Docker daemon not available")
+    reason = docker_unusable_reason()
+    if reason is not None:
+        pytest.skip(f"Docker unusable: {reason}")
     return docker.DockerClient.from_env()
 
 
@@ -209,28 +338,18 @@ def test_container(
     (data_dir / "important.db").write_text("database content")
     (data_dir / "cache.tmp").write_text("temporary")
 
-    container: Container = docker_client.containers.run(
-        "alpine:latest",
-        command="sleep 3600",
+    container = start_test_container(
+        docker_client,
         labels={
             f"{TEST_LABEL_PREFIX}.enable": "true",
             f"{TEST_LABEL_PREFIX}.container.paths": "/data",
         },
-        volumes={str(data_dir): {"bind": "/data", "mode": "rw"}},
-        detach=True,
-        remove=False,
+        binds={data_dir: "/data"},
     )
 
     yield container, data_dir
 
-    try:
-        container.stop(timeout=1)
-    except Exception:
-        pass
-    try:
-        container.remove(force=True)
-    except Exception:
-        pass
+    stop_test_container(container)
 
 
 @pytest.fixture
@@ -241,30 +360,20 @@ def test_container_with_hooks(
     data_dir = docker_visible_tmp / "hook_data"
     data_dir.mkdir()
 
-    container: Container = docker_client.containers.run(
-        "alpine:latest",
-        command="sleep 3600",
+    container = start_test_container(
+        docker_client,
         labels={
             f"{TEST_LABEL_PREFIX}.enable": "true",
             f"{TEST_LABEL_PREFIX}.container.paths": "/data",
             f"{TEST_LABEL_PREFIX}.container.on_start": "echo 'starting' > /data/hook_started",
             f"{TEST_LABEL_PREFIX}.container.on_complete": "echo $DORESTIC_EXIT_CODE > /data/hook_completed",
         },
-        volumes={str(data_dir): {"bind": "/data", "mode": "rw"}},
-        detach=True,
-        remove=False,
+        binds={data_dir: "/data"},
     )
 
     yield container, data_dir
 
-    try:
-        container.stop(timeout=1)
-    except Exception:
-        pass
-    try:
-        container.remove(force=True)
-    except Exception:
-        pass
+    stop_test_container(container)
 
 
 @pytest.fixture
@@ -276,30 +385,20 @@ def test_container_failing_hook(
     data_dir.mkdir()
     (data_dir / "important.db").write_text("database content")
 
-    container: Container = docker_client.containers.run(
-        "alpine:latest",
-        command="sleep 3600",
+    container = start_test_container(
+        docker_client,
         labels={
             f"{TEST_LABEL_PREFIX}.enable": "true",
             f"{TEST_LABEL_PREFIX}.container.paths": "/data",
             f"{TEST_LABEL_PREFIX}.container.on_start": "exit 1",
             f"{TEST_LABEL_PREFIX}.container.on_complete": "echo $DORESTIC_EXIT_CODE > /data/complete_code",
         },
-        volumes={str(data_dir): {"bind": "/data", "mode": "rw"}},
-        detach=True,
-        remove=False,
+        binds={data_dir: "/data"},
     )
 
     yield container, data_dir
 
-    try:
-        container.stop(timeout=1)
-    except Exception:
-        pass
-    try:
-        container.remove(force=True)
-    except Exception:
-        pass
+    stop_test_container(container)
 
 
 @pytest.fixture
@@ -307,27 +406,17 @@ def test_container_no_mount(
     docker_client: docker.DockerClient,
 ) -> Generator[Container, None, None]:
     """Create a test container with backup-test.enable but no volume mounts."""
-    container: Container = docker_client.containers.run(
-        "alpine:latest",
-        command="sleep 3600",
+    container = start_test_container(
+        docker_client,
         labels={
             f"{TEST_LABEL_PREFIX}.enable": "true",
             f"{TEST_LABEL_PREFIX}.container.paths": "/data",
         },
-        detach=True,
-        remove=False,
     )
 
     yield container
 
-    try:
-        container.stop(timeout=1)
-    except Exception:
-        pass
-    try:
-        container.remove(force=True)
-    except Exception:
-        pass
+    stop_test_container(container)
 
 
 @pytest.fixture
@@ -344,9 +433,8 @@ def test_container_multi_scope(
     (compose_dir / "docker-compose.yml").write_text("version: '3'")
     (compose_dir / ".env").write_text("KEY=val")
 
-    container: Container = docker_client.containers.run(
-        "alpine:latest",
-        command="sleep 3600",
+    container = start_test_container(
+        docker_client,
         labels={
             f"{TEST_LABEL_PREFIX}.enable": "true",
             f"{TEST_LABEL_PREFIX}.container.paths": "/data",
@@ -355,21 +443,12 @@ def test_container_multi_scope(
             f"{TEST_LABEL_PREFIX}.host.exclude": "*.pyc",
             "com.docker.compose.project.working_dir": str(compose_dir),
         },
-        volumes={str(data_dir): {"bind": "/data", "mode": "rw"}},
-        detach=True,
-        remove=False,
+        binds={data_dir: "/data"},
     )
 
     yield container, data_dir, compose_dir
 
-    try:
-        container.stop(timeout=1)
-    except Exception:
-        pass
-    try:
-        container.remove(force=True)
-    except Exception:
-        pass
+    stop_test_container(container)
 
 
 @pytest.fixture(autouse=True)

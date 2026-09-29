@@ -18,6 +18,7 @@ import logging
 import pytest
 
 from dorestic import (
+    EXIT_NO_PATHS_RESOLVED,
     EXIT_ON_START_FAILED,
     BackupConfig,
     ContainerTarget,
@@ -31,7 +32,13 @@ from dorestic import (
     run_scope_backup,
 )
 from dorestic.backup import orchestrate_backup
-from tests.conftest import TEST_LABEL_PREFIX, requires_docker, restic_run
+from tests.conftest import (
+    TEST_LABEL_PREFIX,
+    requires_docker,
+    restic_run,
+    start_test_container,
+    stop_test_container,
+)
 
 DUMMY_CONFIG = BackupConfig(repository="/dummy", password_file="/dummy")
 
@@ -285,12 +292,10 @@ class TestBackupContainerLifecycle:
         (data_dir / "file.txt").write_text("x")
         (docker_visible_tmp / "docker-compose.yml").write_text("version: '3'")
 
-        container: Container = docker_client.containers.run(
-            "alpine:latest",
-            command="sleep 3600",
+        container = start_test_container(
+            docker_client,
             labels={f"{TEST_LABEL_PREFIX}.enable": "true"},
-            volumes={str(data_dir): {"bind": "/data", "mode": "rw"}},
-            detach=True,
+            binds={data_dir: "/data"},
         )
         try:
             backup_calls: list[str] = []
@@ -319,8 +324,7 @@ class TestBackupContainerLifecycle:
             assert not any(":host" in c for c in backup_calls)
             assert host_result.exit_code == EXIT_ON_START_FAILED
         finally:
-            container.stop(timeout=1)
-            container.remove(force=True)
+            stop_test_container(container)
 
 
 # ── per-scope logging ──────────────────────────────────────
@@ -466,18 +470,199 @@ class TestHostnamePassthrough:
         assert calls[0]["hostname"] == "dorestic-host-documents"
 
 
+# ── hook / resolution ordering ──────────────────────────────
+
+
+class TestHookOrdering:
+    """Regression tests for the ordering bug that silently lost two databases.
+
+    `resolve_container_paths` performs a `docker cp` for any path that is not on
+    a mount. When it ran before `container.on_start`, a `pg_dump` hook writing
+    /tmp/dump.sql was copied *before* it existed; `on_complete` then deleted it.
+    The copy failing left `container_paths` empty, which used to be reported as
+    a successful skip.
+    """
+
+    def _target(self, **scope: Any) -> ContainerTarget:
+        container = MagicMock()
+        container.name = "db"
+        return ContainerTarget(
+            name="db",
+            container=container,
+            container_scope=ScopeConfig(**scope),
+        )
+
+    def test_container_on_start_runs_before_path_resolution(self) -> None:
+        order: list[str] = []
+
+        def mock_exec(*_a: Any, **_kw: Any) -> tuple[int, str]:
+            order.append("on_start")
+            return 0, ""
+
+        def mock_resolve(*_a: Any, **_kw: Any) -> list[Path]:
+            order.append("resolve")
+            return [Path("/tmp/dump.sql")]
+
+        with (
+            patch("dorestic.backup.run_docker_exec", side_effect=mock_exec),
+            patch("dorestic.backup.resolve_container_paths", side_effect=mock_resolve),
+            patch("dorestic.backup.run_scope_backup", return_value=0),
+        ):
+            backup_container(
+                self._target(paths=["/tmp/dump.sql"], on_start="pg_dump > /tmp/dump.sql"),
+                config=DUMMY_CONFIG,
+            )
+
+        assert order == ["on_start", "resolve"]
+
+    def test_host_on_start_runs_before_path_resolution(self) -> None:
+        order: list[str] = []
+
+        def mock_hook(*_a: Any, **_kw: Any) -> int:
+            order.append("on_start")
+            return 0
+
+        def mock_resolve(*_a: Any, **_kw: Any) -> list[Path]:
+            order.append("resolve")
+            return [Path("/data")]
+
+        with (
+            patch("dorestic.backup.run_hook", side_effect=mock_hook),
+            patch("dorestic.backup.resolve_host_paths", side_effect=mock_resolve),
+            patch("dorestic.backup.run_scope_backup", return_value=0),
+        ):
+            container = MagicMock()
+            container.name = "db"
+            backup_container(
+                ContainerTarget(
+                    name="db",
+                    container=container,
+                    host_scope=ScopeConfig(paths=["."], on_start="make-dump"),
+                ),
+                config=DUMMY_CONFIG,
+            )
+
+        assert order == ["on_start", "resolve"]
+
+    def test_failed_on_start_skips_resolution_entirely(self) -> None:
+        """No point running a `docker cp` for a dump the hook never produced."""
+        with (
+            patch("dorestic.backup.run_docker_exec", return_value=(1, "")),
+            patch("dorestic.backup.resolve_container_paths") as mock_resolve,
+        ):
+            container_result, _ = backup_container(
+                self._target(paths=["/tmp/dump.sql"], on_start="false"),
+                config=DUMMY_CONFIG,
+            )
+
+        mock_resolve.assert_not_called()
+        assert container_result.exit_code == EXIT_ON_START_FAILED
+
+    def test_unresolved_container_paths_fail_loudly(self) -> None:
+        """The exact production symptom: `docker cp` fails, nothing is backed up.
+
+        This must be an error, not `exit_code=0, skipped=True` — the latter kept
+        the healthcheck green while two databases were never backed up at all.
+        """
+        with (
+            patch("dorestic.backup.run_docker_exec", return_value=(0, "")),
+            patch("dorestic.backup.resolve_container_paths", return_value=[]),
+            patch("dorestic.backup.run_scope_backup", return_value=0) as mock_backup,
+        ):
+            container_result, _ = backup_container(
+                self._target(paths=["/tmp/dump.sql"], on_start="pg_dump > /tmp/dump.sql"),
+                config=DUMMY_CONFIG,
+            )
+
+        mock_backup.assert_not_called()
+        assert container_result.exit_code == EXIT_NO_PATHS_RESOLVED
+        assert container_result.skipped is False
+
+    def test_unresolved_host_paths_fail_loudly(self) -> None:
+        with (
+            patch("dorestic.backup.resolve_host_paths", return_value=[]),
+            patch("dorestic.backup.run_scope_backup", return_value=0),
+        ):
+            container = MagicMock()
+            container.name = "db"
+            _, host_result = backup_container(
+                ContainerTarget(
+                    name="db",
+                    container=container,
+                    host_scope=ScopeConfig(paths=["./config"]),
+                ),
+                config=DUMMY_CONFIG,
+            )
+
+        assert host_result.exit_code == EXIT_NO_PATHS_RESOLVED
+        assert host_result.skipped is False
+
+    def test_undeclared_scope_stays_a_silent_skip(self) -> None:
+        """Only a *declared* scope that resolves to nothing is an error."""
+        container = MagicMock()
+        container.name = "db"
+        with patch("dorestic.backup.resolve_container_paths", return_value=[]):
+            container_result, host_result = backup_container(
+                ContainerTarget(name="db", container=container),
+                config=DUMMY_CONFIG,
+            )
+
+        assert (container_result.exit_code, container_result.skipped) == (0, True)
+        assert (host_result.exit_code, host_result.skipped) == (0, True)
+
+
+class TestHostGroupHookOrdering:
+    def test_paths_are_re_resolved_after_on_start(self) -> None:
+        """A group hook may be what creates the paths, so resolution follows it."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "dump.sql"
+
+            def mock_hook(*_a: Any, **_kw: Any) -> int:
+                target.write_text("dump")
+                return 0
+
+            calls: list[list[Path]] = []
+
+            def mock_backup(_tag: str, paths: list[Path], *_a: Any, **_kw: Any) -> int:
+                calls.append(paths)
+                return 0
+
+            with (
+                patch("dorestic.backup.run_hook", side_effect=mock_hook),
+                patch("dorestic.backup.run_scope_backup", side_effect=mock_backup),
+            ):
+                result = backup_host_group(
+                    HostGroup(
+                        tag="dumps",
+                        paths=[str(target)],
+                        on_start=f"pg_dump > {target}",
+                    ),
+                    config=DUMMY_CONFIG,
+                )
+
+            assert result.exit_code == 0
+            assert calls == [[target]]
+
+
 # ── backup_host_group ───────────────────────────────────────
 
 
 class TestBackupHostGroup:
-    def test_skips_when_no_valid_paths(self) -> None:
+    def test_fails_when_no_valid_paths(self) -> None:
+        """A declared group whose paths all vanish is a failure, not a no-op.
+
+        Reporting exit 0 here is what let a broken backup ping healthchecks.io
+        green for months.
+        """
         group = HostGroup(
             tag="missing",
             paths=["/nonexistent/path"],
         )
         result = backup_host_group(group, config=DUMMY_CONFIG)
-        assert result.exit_code == 0
-        assert result.skipped is True
+        assert result.exit_code == EXIT_NO_PATHS_RESOLVED
+        assert result.skipped is False
 
     def test_backs_up_valid_paths(self, tmp_path: Path) -> None:
         data_dir = tmp_path / "data"
@@ -743,11 +928,13 @@ class TestDockerCpFallback:
         backup_config: BackupConfig,
     ) -> None:
         """When a container path has no matching mount, docker cp extracts it."""
-        container: Container = docker_client.containers.run(
-            "alpine:latest",
-            command="sh -c 'mkdir -p /app/data && echo secret > /app/data/file.txt && sleep 3600'",
+        container = start_test_container(
+            docker_client,
             labels={f"{TEST_LABEL_PREFIX}.enable": "true"},
-            detach=True,
+            command=(
+                "sh -c 'mkdir -p /app/data "
+                "&& echo secret > /app/data/file.txt && sleep 3600'"
+            ),
         )
         try:
             import time
@@ -784,8 +971,7 @@ class TestDockerCpFallback:
             assert Path(staged_path).exists()
             assert (Path(staged_path) / "file.txt").read_text().strip() == "secret"
         finally:
-            container.stop(timeout=1)
-            container.remove(force=True)
+            stop_test_container(container)
 
 
 # ── orchestrate_backup / --only filtering ─────────────────
@@ -804,9 +990,11 @@ class TestOrchestrateBackup:
         config: BackupConfig,
         only: str | None = None,
         targets: list[ContainerTarget] | None = None,
+        restic_codes: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         if targets is None:
             targets = []
+        codes = restic_codes or {}
 
         backup_calls: list[str] = []
         host_group_calls: list[str] = []
@@ -824,8 +1012,8 @@ class TestOrchestrateBackup:
         def mock_run_restic(*args: str, **kwargs: Any) -> Any:
             restic_calls.append(args[0])
             if kwargs.get("capture"):
-                return 0, "", ""
-            return 0
+                return codes.get(args[0], 0), "", ""
+            return codes.get(args[0], 0)
 
         def mock_run_hook(command: str, **_: Any) -> int:
             hook_calls.append(command)
@@ -936,6 +1124,32 @@ class TestOrchestrateBackup:
 
         assert result["exit_code"] == 0
         assert result["host_group_calls"] == ["documents"]
+
+    def test_failed_prune_is_counted_as_an_error(self) -> None:
+        """`forget --prune` exiting non-zero must not leave the run green."""
+        result = self._run(
+            DUMMY_CONFIG, targets=[self._make_target("db")],
+            restic_codes={"forget": 1},
+        )
+
+        assert result["exit_code"] != 0
+
+    def test_failed_check_is_counted_as_an_error(self) -> None:
+        """A repository that fails `restic check` is a failed backup run."""
+        result = self._run(
+            DUMMY_CONFIG, targets=[self._make_target("db")],
+            restic_codes={"check": 1},
+        )
+
+        assert result["exit_code"] != 0
+
+    def test_check_still_runs_after_a_failed_prune(self) -> None:
+        result = self._run(
+            DUMMY_CONFIG, targets=[self._make_target("db")],
+            restic_codes={"forget": 1},
+        )
+
+        assert "check" in result["restic_calls"]
 
     def test_only_matches_both_container_and_host_group(self) -> None:
         config = BackupConfig(

@@ -42,7 +42,8 @@ from dorestic import (
     run_hook,
 )
 from dorestic.api import Dorestic
-from dorestic.cli import write_example_config
+from dorestic.backup import _lock_path_for  # pyright: ignore[reportPrivateUsage]
+from dorestic.cli import main, write_example_config
 from dorestic.config import (
     refresh_config,
     render_config,
@@ -58,6 +59,11 @@ from dorestic.display import (
     print_tag_summary,
 )
 from dorestic.models import RetentionPolicy, parse_snapshot_time
+from dorestic.restic import (
+    _collapse_mounts,  # pyright: ignore[reportPrivateUsage]
+    _run_streaming,  # pyright: ignore[reportPrivateUsage]
+    run_restic,
+)
 
 
 # ── parse_comma_list ────────────────────────────────────────
@@ -320,18 +326,20 @@ class TestTeeStream:
 
 
 class TestAcquireLock:
-    def _make_config(self, repo: str = "/test/repo") -> "BackupConfig":
-        return BackupConfig(repository=repo, password_file="/dummy")
+    def _make_config(self, tmp_dir: Path, repo: str = "/test/repo") -> "BackupConfig":
+        # tmp_dir, not tempfile.gettempdir(), is what _lock_path_for reads —
+        # pointing it at the test's own directory keeps the real /tmp out of it.
+        return BackupConfig(
+            repository=repo, password_file="/dummy", tmp_dir=str(tmp_dir),
+        )
 
-    def test_acquires_lock(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-        config = self._make_config()
+    def test_acquires_lock(self, tmp_path: Path) -> None:
+        config = self._make_config(tmp_path)
         fd = acquire_lock(config)
         fd.close()
 
-    def test_second_lock_fails(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-        config = self._make_config()
+    def test_second_lock_fails(self, tmp_path: Path) -> None:
+        config = self._make_config(tmp_path)
         fd1 = acquire_lock(config)
 
         with pytest.raises(RuntimeError, match="Another backup is already running"):
@@ -339,19 +347,45 @@ class TestAcquireLock:
 
         fd1.close()
 
-    def test_lock_released_on_close(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-        config = self._make_config()
+    def test_lock_released_on_close(self, tmp_path: Path) -> None:
+        config = self._make_config(tmp_path)
         fd1 = acquire_lock(config)
         fd1.close()
 
         fd2 = acquire_lock(config)
         fd2.close()
 
-    def test_different_repos_independent(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-        config_a = self._make_config("/repo/a")
-        config_b = self._make_config("/repo/b")
+    def test_refuses_to_follow_a_symlink(
+        self, tmp_path: Path,
+    ) -> None:
+        """The lock path is predictable and tmp_dir defaults to world-writable /tmp.
+
+        Without O_NOFOLLOW a planted symlink redirects the truncating open onto
+        any other file this user can write.
+        """
+        config = self._make_config(tmp_path)
+        victim = tmp_path / "victim"
+        victim.write_text("precious")
+
+        lock_path = _lock_path_for(config)
+        acquire_lock(config).close()
+        lock_path.unlink()
+        lock_path.symlink_to(victim)
+
+        with pytest.raises(RuntimeError, match="Cannot open lock file"):
+            acquire_lock(config)
+        assert victim.read_text() == "precious"
+
+    def test_lock_file_is_owner_only(
+        self, tmp_path: Path,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        acquire_lock(config).close()
+        assert os.stat(_lock_path_for(config)).st_mode & 0o777 == 0o600
+
+    def test_different_repos_independent(self, tmp_path: Path) -> None:
+        config_a = self._make_config(tmp_path, "/repo/a")
+        config_b = self._make_config(tmp_path, "/repo/b")
         fd_a = acquire_lock(config_a)
         fd_b = acquire_lock(config_b)
         fd_a.close()
@@ -525,6 +559,47 @@ class TestLoadConfig:
         }))
 
         with pytest.raises(ValueError, match="does not exist"):
+            load_config(str(config_file))
+
+    def test_unknown_top_level_key_is_rejected(self, tmp_path: Path) -> None:
+        """A misspelled key must fail the backup, not silently take a default.
+
+        `config-validate` always caught these; `load_config` did not, so a typo
+        in `retention` or `stale_threshold_hours` quietly changed behaviour.
+        """
+        pw = self._make_pw_file(tmp_path)
+        config_file = tmp_path / "config.yml"
+        config_file.write_text(yaml.dump({
+            "repository": "/backup",
+            "password_file": str(pw),
+            "repostiory": "/typo",
+        }))
+
+        with pytest.raises(ValueError, match="Unknown config keys: repostiory"):
+            load_config(str(config_file))
+
+    def test_unknown_retention_key_is_rejected(self, tmp_path: Path) -> None:
+        pw = self._make_pw_file(tmp_path)
+        config_file = tmp_path / "config.yml"
+        config_file.write_text(yaml.dump({
+            "repository": "/backup",
+            "password_file": str(pw),
+            "retention": {"daily": 7, "yearly": 2},
+        }))
+
+        with pytest.raises(ValueError, match="Unknown retention keys: yearly"):
+            load_config(str(config_file))
+
+    def test_unknown_host_group_key_is_rejected(self, tmp_path: Path) -> None:
+        pw = self._make_pw_file(tmp_path)
+        config_file = tmp_path / "config.yml"
+        config_file.write_text(yaml.dump({
+            "repository": "/backup",
+            "password_file": str(pw),
+            "host_groups": [{"tag": "docs", "paths": ["/data"], "onstart": "x"}],
+        }))
+
+        with pytest.raises(ValueError, match="Unknown keys in host group 'docs': onstart"):
             load_config(str(config_file))
 
     def test_excludes_typo_root(self, tmp_path: Path) -> None:
@@ -722,6 +797,31 @@ class TestParseSnapshotTime:
         dt = parse_snapshot_time("2026-07-09T02:00:00.123456789Z")
         assert dt.microsecond == 123456
         assert dt.tzinfo == timezone.utc
+
+    def test_offset_is_converted_not_discarded(self) -> None:
+        """restic stamps snapshots in the writing machine's local offset.
+
+        Treating +02:00 as if it were UTC shifted every non-UTC snapshot by the
+        offset, which silently skewed staleness checks and retention grouping.
+        """
+        dt = parse_snapshot_time("2026-07-09T02:00:00+02:00")
+        assert dt == datetime(2026, 7, 9, 0, 0, tzinfo=timezone.utc)
+
+    def test_negative_offset_is_converted(self) -> None:
+        dt = parse_snapshot_time("2026-07-09T02:00:00-05:00")
+        assert dt == datetime(2026, 7, 9, 7, 0, tzinfo=timezone.utc)
+
+    def test_offset_with_nanosecond_fraction(self) -> None:
+        dt = parse_snapshot_time("2026-07-09T02:00:00.123456789+02:00")
+        assert dt == datetime(2026, 7, 9, 0, 0, 0, 123456, tzinfo=timezone.utc)
+
+    def test_distinct_offsets_stay_distinct(self) -> None:
+        """The bug collapsed every offset onto the same instant."""
+        stamps = [
+            parse_snapshot_time(f"2026-07-09T02:00:00{off}")
+            for off in ("+00:00", "+02:00", "-05:00")
+        ]
+        assert len(set(stamps)) == 3
 
 
 # ── format_size ──────────────────────────────────────────
@@ -1755,6 +1855,13 @@ class TestDoresticRestoreExtra:
 
 
 class TestPrintTagSummary:
+    def test_empty_snapshot_list(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """An empty repository is a normal state, not a `max() on empty` crash."""
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+        config = BackupConfig(repository="/r", password_file="/p")
+        print_tag_summary([], now, config)
+        assert "No snapshots found." in capsys.readouterr().out
+
     def _make_snap(self, tag: str, time: datetime) -> Snapshot:
         return Snapshot(
             id="a" * 64, short_id="a" * 8, tags=[tag],
@@ -1788,6 +1895,12 @@ class TestPrintTagSummary:
 
 
 class TestPrintTagDetail:
+    def test_empty_snapshot_list(self, capsys: pytest.CaptureFixture[str]) -> None:
+        now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+        config = BackupConfig(repository="/r", password_file="/p")
+        print_tag_detail([], now, config)
+        assert "No snapshots found." in capsys.readouterr().out
+
     def test_shows_snapshots_newest_first(self, capsys: pytest.CaptureFixture[str]) -> None:
         now = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
         config = BackupConfig(repository="/r", password_file="/p")
@@ -1894,3 +2007,134 @@ class TestDoresticForgetTag:
                 with patch("dorestic.api.prune") as mock_prune:
                     d.forget_tag("old", do_prune=False)
         mock_prune.assert_not_called()
+
+
+# ── restic container invocation ──────────────────────────
+
+
+class TestCollapseMounts:
+    """`-v` per path does not scale: a `dir@2` spec expands to one entry per file."""
+
+    def test_files_collapse_to_their_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("a")
+        (tmp_path / "b.txt").write_text("b")
+
+        assert _collapse_mounts([tmp_path / "a.txt", tmp_path / "b.txt"]) == [
+            str(tmp_path)
+        ]
+
+    def test_directory_is_kept_as_itself(self, tmp_path: Path) -> None:
+        assert _collapse_mounts([tmp_path]) == [str(tmp_path)]
+
+    def test_nested_paths_collapse_to_the_ancestor(self, tmp_path: Path) -> None:
+        deep = tmp_path / "sub" / "deeper"
+        deep.mkdir(parents=True)
+        (deep / "f.txt").write_text("f")
+
+        assert _collapse_mounts([tmp_path, deep, deep / "f.txt"]) == [str(tmp_path)]
+
+    def test_unrelated_trees_are_both_kept(self, tmp_path: Path) -> None:
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+
+        assert sorted(_collapse_mounts([a, b])) == [str(a), str(b)]
+
+    def test_empty_input(self) -> None:
+        assert _collapse_mounts([]) == []
+
+
+class TestResticMountArgs:
+    def test_many_files_become_one_mount(self, tmp_path: Path) -> None:
+        """The whole point: 500 files must not become 500 `-v` flags."""
+        paths: list[Path] = []
+        for i in range(500):
+            f = tmp_path / f"file{i}.txt"
+            f.write_text("x")
+            paths.append(f)
+
+        captured: list[list[str]] = []
+        config = BackupConfig(repository="/repo", password_file="/pw")
+
+        def record(cmd: list[str]) -> int:
+            captured.append(cmd)
+            return 0
+
+        with patch("dorestic.restic._run_streaming", side_effect=record):
+            run_restic("backup", config=config, mount_paths=paths)
+
+        cmd = captured[0]
+        mounts = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-v"]
+        # One for the password file, one for the repository, one for tmp_path.
+        assert f"{tmp_path}:{tmp_path}:ro" in mounts
+        assert sum(1 for m in mounts if m.endswith(":ro") and str(tmp_path) in m) == 1
+
+
+class TestRunStreaming:
+    def test_output_is_relayed_through_sys_stdout(self) -> None:
+        """subprocess needs a real fd, so it bypasses TeeStream unless relayed.
+
+        Without this the entire restic transcript skipped the log file and
+        ignored `backup -q`, going straight to the inherited fd 1.
+        """
+        buffer = io.StringIO()
+        with patch("sys.stdout", buffer):
+            code = _run_streaming(["sh", "-c", "echo to-stdout; echo to-stderr >&2"])
+
+        assert code == 0
+        assert "to-stdout" in buffer.getvalue()
+        # stderr is merged in so the log stays chronological.
+        assert "to-stderr" in buffer.getvalue()
+
+    def test_returns_the_child_exit_code(self) -> None:
+        with patch("sys.stdout", io.StringIO()):
+            assert _run_streaming(["sh", "-c", "exit 3"]) == 3
+
+
+# ── CLI error handling ───────────────────────────────────
+
+
+class TestCliErrorHandling:
+    """Expected failures should read as one line, not a traceback.
+
+    find_config in particular writes a careful message naming every path it
+    searched; before this it was buried in a stack trace.
+    """
+
+    def _run_main(self, exc: BaseException) -> tuple[int, str]:
+        with patch("sys.argv", ["dorestic", "status"]), \
+             patch("dorestic.cli._cmd_status", side_effect=exc), \
+             patch("sys.stderr", io.StringIO()) as err:
+            with pytest.raises(SystemExit) as exit_info:
+                main()
+            return int(exit_info.value.code or 0), err.getvalue()
+
+    @pytest.mark.parametrize("exc", [
+        FileNotFoundError("No config file found; searched: /etc/dorestic.yml"),
+        ValueError("Unknown config keys: repostiory"),
+        RuntimeError("Another backup is already running"),
+    ])
+    def test_expected_errors_print_one_line(self, exc: BaseException) -> None:
+        code, err = self._run_main(exc)
+        assert code == 1
+        assert err.startswith("Error: ")
+        assert str(exc) in err
+        assert "Traceback" not in err
+
+    def test_eof_at_a_prompt(self) -> None:
+        code, err = self._run_main(EOFError())
+        assert code == 1
+        assert "no input available to confirm" in err
+
+    def test_interrupt_uses_the_conventional_code(self) -> None:
+        code, err = self._run_main(KeyboardInterrupt())
+        assert code == 130
+        assert "Interrupted." in err
+
+    def test_unexpected_errors_still_raise(self) -> None:
+        """Anything not in the expected set keeps its traceback — it's a bug."""
+        with patch("sys.argv", ["dorestic", "status"]), \
+             patch("dorestic.cli._cmd_status", side_effect=ZeroDivisionError("boom")):
+            with pytest.raises(ZeroDivisionError):
+                main()

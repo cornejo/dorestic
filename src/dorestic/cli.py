@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.resources
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -464,7 +465,7 @@ def main() -> None:
         print(_HELP_TEXT, end="")
         sys.exit(0)
 
-    commands = {
+    commands: dict[str, Callable[[argparse.Namespace], None]] = {
         "backup": _cmd_backup,
         "list": _cmd_list,
         "view": _cmd_view,
@@ -477,4 +478,18 @@ def main() -> None:
         "diff": _cmd_diff,
         "forget-tag": _cmd_forget_tag,
     }
-    commands[args.command](args)
+    # Expected failures — missing/invalid config, an unreachable repository, a
+    # bad snapshot ref, a piped stdin at a confirmation prompt — are reported as
+    # one line on stderr. Without this every one of them reaches the user as a
+    # traceback, including find_config's carefully written search-path message.
+    try:
+        commands[args.command](args)
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except EOFError:
+        print("Error: no input available to confirm", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(130)

@@ -22,7 +22,12 @@ from dorestic import (
     resolve_host_paths,
     run_docker_exec,
 )
-from tests.conftest import TEST_LABEL_PREFIX, requires_docker
+from tests.conftest import (
+    TEST_LABEL_PREFIX,
+    requires_docker,
+    start_test_container,
+    stop_test_container,
+)
 
 
 # ── discover_targets ────────────────────────────────────────
@@ -91,17 +96,14 @@ class TestDiscoverTargets:
         """backup.container.shell label is parsed into ScopeConfig.shell."""
         data_dir = docker_visible_tmp / "shell_data"
         data_dir.mkdir()
-        container: Container = docker_client.containers.run(
-            "alpine:latest",
-            command="sleep 3600",
+        container = start_test_container(
+            docker_client,
             labels={
                 f"{TEST_LABEL_PREFIX}.enable": "true",
                 f"{TEST_LABEL_PREFIX}.container.paths": "/data",
                 f"{TEST_LABEL_PREFIX}.container.shell": "/bin/bash",
             },
-            volumes={str(data_dir): {"bind": "/data", "mode": "rw"}},
-            detach=True,
-            remove=False,
+            binds={data_dir: "/data"},
         )
         try:
             targets = discover_targets(docker_client, label_prefix=TEST_LABEL_PREFIX)
@@ -109,46 +111,35 @@ class TestDiscoverTargets:
             assert target.container_scope is not None
             assert target.container_scope.shell == "/bin/bash"
         finally:
-            container.stop(timeout=1)
-            container.remove(force=True)
+            stop_test_container(container)
 
     def test_no_paths_raises(self, docker_client: docker.DockerClient, docker_visible_tmp: Path) -> None:
         """backup.enable=true without any paths raises ValueError."""
-        container: Container = docker_client.containers.run(
-            "alpine:latest",
-            command="sleep 3600",
-            labels={
-                f"{TEST_LABEL_PREFIX}.enable": "true",
-            },
-            detach=True,
-            remove=False,
+        container = start_test_container(
+            docker_client,
+            labels={f"{TEST_LABEL_PREFIX}.enable": "true"},
         )
         try:
             with pytest.raises(ValueError, match="no container.paths or host.paths"):
                 discover_targets(docker_client, label_prefix=TEST_LABEL_PREFIX)
         finally:
-            container.stop(timeout=1)
-            container.remove(force=True)
+            stop_test_container(container)
 
     def test_excludes_label_typo_raises(self, docker_client: docker.DockerClient, docker_visible_tmp: Path) -> None:
         """Using 'excludes' (plural) in a Docker label raises a clear error."""
-        container: Container = docker_client.containers.run(
-            "alpine:latest",
-            command="sleep 3600",
+        container = start_test_container(
+            docker_client,
             labels={
                 f"{TEST_LABEL_PREFIX}.enable": "true",
                 f"{TEST_LABEL_PREFIX}.container.paths": "/data",
                 f"{TEST_LABEL_PREFIX}.container.excludes": "*.tmp",
             },
-            detach=True,
-            remove=False,
         )
         try:
             with pytest.raises(ValueError, match="excludes.*plural"):
                 discover_targets(docker_client, label_prefix=TEST_LABEL_PREFIX)
         finally:
-            container.stop(timeout=1)
-            container.remove(force=True)
+            stop_test_container(container)
 
 
 # ── resolve_container_path ──────────────────────────────────
@@ -204,15 +195,10 @@ class TestResolveContainerPath:
         outer_dir.mkdir()
         inner_dir.mkdir()
 
-        container: Container = docker_client.containers.run(
-            "alpine:latest",
-            command="sleep 3600",
+        container = start_test_container(
+            docker_client,
             labels={f"{TEST_LABEL_PREFIX}.enable": "true"},
-            volumes={
-                str(outer_dir): {"bind": "/data", "mode": "rw"},
-                str(inner_dir): {"bind": "/data/nested", "mode": "rw"},
-            },
-            detach=True,
+            binds={outer_dir: "/data", inner_dir: "/data/nested"},
         )
         try:
             container.reload()
@@ -223,8 +209,7 @@ class TestResolveContainerPath:
             assert str(inner_dir) in str(result)
             assert str(result).endswith("file.txt")
         finally:
-            container.stop(timeout=1)
-            container.remove(force=True)
+            stop_test_container(container)
 
 
 # ── resolve_container_paths (with existence check) ──────────

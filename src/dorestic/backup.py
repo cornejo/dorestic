@@ -28,6 +28,7 @@ from dorestic.models import (
     DryRunPlan,
     DryRunScope,
     DryRunTarget,
+    EXIT_NO_PATHS_RESOLVED,
     EXIT_ON_START_FAILED,
     HostGroup,
     ScopeResult,
@@ -63,7 +64,16 @@ def _lock_path_for(config: BackupConfig) -> Path:
 
 def acquire_lock(config: BackupConfig) -> IO[str]:
     lock_path = _lock_path_for(config)
-    lock_fd: IO[str] = open(lock_path, "w")
+    # O_NOFOLLOW + 0600: the path is predictable from the repository name, and
+    # tmp_dir defaults to a world-writable /tmp, so a planted symlink must not
+    # redirect the truncating open onto another file this user can write.
+    try:
+        raw_fd = os.open(
+            lock_path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600,
+        )
+    except OSError as e:
+        raise RuntimeError(f"Cannot open lock file {lock_path}: {e}") from e
+    lock_fd: IO[str] = os.fdopen(raw_fd, "w")
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -95,9 +105,6 @@ def backup_container(
 ) -> tuple[ScopeResult, ScopeResult]:
     log.info("")
     log.info("=== %s ===", target.name)
-
-    container_paths = resolve_container_paths(target, staging_dir=staging_dir)
-    host_paths = resolve_host_paths(target)
 
     tag_env = {"DORESTIC_TAG": target.name}
     # Host hooks additionally get the compose dir, both as cwd and in the env so
@@ -137,6 +144,17 @@ def backup_container(
             )
             host_on_start_ok = False
 
+    # Resolution must follow the on_start hooks, never precede them: an
+    # on_start that dumps a database writes the very file being collected, and
+    # for an unmounted path that collection is a `docker cp`. Resolving first
+    # copied a file that did not exist yet, then the hook created it, then
+    # on_complete deleted it — a silent empty backup on every run.
+    container_paths = (
+        resolve_container_paths(target, staging_dir=staging_dir)
+        if container_on_start_ok else []
+    )
+    host_paths = resolve_host_paths(target) if host_on_start_ok else []
+
     container_result = ScopeResult(exit_code=0, skipped=True)
     if container_paths and container_on_start_ok:
         container_tag = f"{target.name}:container"
@@ -152,8 +170,14 @@ def backup_container(
             log.info("  container backup OK")
         else:
             log.error("  container backup FAILED (exit %d)", exit_code)
-    elif container_paths and not container_on_start_ok:
+    elif not container_on_start_ok:
         container_result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
+    elif target.container_scope:
+        log.error(
+            "  container backup FAILED: none of the configured paths resolved (%s)",
+            ", ".join(target.container_scope.paths),
+        )
+        container_result = ScopeResult(exit_code=EXIT_NO_PATHS_RESOLVED)
 
     host_result = ScopeResult(exit_code=0, skipped=True)
     if host_paths and host_on_start_ok:
@@ -170,8 +194,14 @@ def backup_container(
             log.info("  host backup OK")
         else:
             log.error("  host backup FAILED (exit %d)", exit_code)
-    elif host_paths and not host_on_start_ok:
+    elif not host_on_start_ok:
         host_result = ScopeResult(exit_code=EXIT_ON_START_FAILED, skipped=True)
+    elif target.host_scope:
+        log.error(
+            "  host backup FAILED: none of the configured paths resolved (%s)",
+            ", ".join(target.host_scope.paths),
+        )
+        host_result = ScopeResult(exit_code=EXIT_NO_PATHS_RESOLVED)
 
     if target.container_scope and target.container_scope.on_complete:
         log.info("  container.on_complete: %s", target.container_scope.on_complete)
@@ -211,10 +241,6 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
         else:
             log.warning("  host path %s does not exist", full)
 
-    if not resolved_paths:
-        log.info("  no valid paths, skipping")
-        return ScopeResult(exit_code=0, skipped=True)
-
     tag_env = {"DORESTIC_TAG": group.tag}
 
     on_start_ok = True
@@ -225,7 +251,17 @@ def backup_host_group(group: HostGroup, config: BackupConfig) -> ScopeResult:
             log.error("  on_start failed (exit %d), skipping backup", code)
             on_start_ok = False
 
-    if on_start_ok:
+    # Re-resolve after on_start: the hook may be what creates the paths.
+    if on_start_ok and group.on_start:
+        resolved_paths = [Path(raw) for raw in group.paths if Path(raw).exists()]
+
+    if on_start_ok and not resolved_paths:
+        log.error(
+            "  backup FAILED: none of the configured paths exist (%s)",
+            ", ".join(group.paths),
+        )
+        result = ScopeResult(exit_code=EXIT_NO_PATHS_RESOLVED)
+    elif on_start_ok:
         exit_code = run_scope_backup(
             group.tag, resolved_paths, group.exclude, config=config,
             hostname=make_restic_hostname("host", group.tag),
@@ -290,6 +326,10 @@ def plan_backup(
     host_groups = config.host_groups
     if only is not None:
         host_groups = [g for g in host_groups if g.tag == only]
+        if not targets and not host_groups:
+            raise ValueError(
+                f"No container or host group found matching '{only}'"
+            )
 
     dry_groups: list[DryRunScope] = []
     for group in host_groups:
@@ -386,7 +426,7 @@ def orchestrate_backup(
         if not targeted:
             log.info("")
             log.info("=== Forgetting old snapshots and pruning ===")
-            run_restic(
+            forget_code = run_restic(
                 "forget",
                 "--group-by", "host,tags",
                 "--keep-daily", str(config.retention.daily),
@@ -395,10 +435,16 @@ def orchestrate_backup(
                 "--prune",
                 config=config,
             )
+            if forget_code != 0:
+                log.error("forget/prune FAILED (exit %d)", forget_code)
+                errors += 1
 
             log.info("")
             log.info("=== Checking repository integrity ===")
-            run_restic("check", config=config)
+            check_code = run_restic("check", config=config)
+            if check_code != 0:
+                log.error("repository check FAILED (exit %d)", check_code)
+                errors += 1
 
         overall_exit = 1 if errors > 0 else 0
 
@@ -416,7 +462,10 @@ def orchestrate_backup(
 
         return overall_exit
     finally:
-        docker_rmtree(config, str(staging_dir))
+        # Only the docker cp fallback writes here, and its files are
+        # root-owned; skip the cleanup container when nothing was staged.
+        if any(staging_dir.iterdir()):
+            docker_rmtree(config, str(staging_dir))
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 

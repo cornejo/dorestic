@@ -31,8 +31,11 @@ variables:
     - if: $CI_COMMIT_BRANCH == "main"
 
 # --- test -------------------------------------------------------------------
-# No dind on these runners, so Docker/restic-backed tests are deselected with
-# `-m "not docker"` and run locally instead: `uv run pytest -m docker`.
+# Only the pure-Python half of the suite runs here. The Docker/restic-backed
+# tests start sibling containers and bind-mount out of the working tree, which
+# a stock non-privileged docker-executor runner cannot do — no daemon socket,
+# no dind — so they are deselected with `-m "not docker"`. Run them wherever a
+# real daemon is available: `uv run pytest -m docker`.
 
 test:
   <<: *uv-job

@@ -140,6 +140,10 @@ def print_tag_summary(
         for tag in tags:
             by_tag.setdefault(tag, []).append(snap)
 
+    if not snapshots:
+        print("No snapshots found.")
+        return
+
     rows: list[tuple[str, int, datetime, str, bool]] = []
     for tag in sorted(by_tag):
         snaps = by_tag[tag]
@@ -172,6 +176,10 @@ def print_tag_summary(
 def print_tag_detail(
     snapshots: list[Snapshot], now: datetime, config: BackupConfig,
 ) -> None:
+    if not snapshots:
+        print("No snapshots found.")
+        return
+
     sorted_snaps = sorted(snapshots, key=lambda s: s.time, reverse=True)
 
     rows: list[tuple[str, str, str, str, bool]] = []
@@ -182,10 +190,7 @@ def print_tag_detail(
         paths_str = ", ".join(snap.paths)
         rows.append((snap.short_id, time_str, freshness, paths_str, stale))
 
-    id_w = max(len(r[0]) for r in rows)
-    id_w = max(id_w, 2)
-    path_w = max(len(r[3]) for r in rows) if rows else 5
-    path_w = max(path_w, 5)
+    id_w = max(max(len(r[0]) for r in rows), 2)
 
     header = f"{'ID':<{id_w}}  {'TIME':<19}  {'FRESHNESS':<14}  PATHS"
     print(header)

@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.6.0 — 2026-09-29
+
+### Changed
+- A backup run that previously exited 0 may now exit non-zero. A configured scope that resolves to no paths, and a failing `forget --prune` or `check`, are counted as errors rather than passed over — see Fixed below. Anything reading dorestic's exit code (a healthcheck ping, a cron wrapper) will start seeing failures it was never told about
+
+### Fixed
+- **Container paths were collected before `on_start` ran.** For a path that is not on a mount, dorestic collects it with `docker cp` — and that copy happened before the hook meant to produce the file. A `pg_dump` into `/tmp/dump.sql` was therefore copied before it existed, created by the hook, then deleted by `on_complete`, every single run. Paths are now resolved after both `on_start` hooks. Databases whose dump lands inside a mounted volume were never affected, which is why this went unnoticed
+- **A scope that resolved to no paths reported success.** The failed `docker cp` above left the path list empty, which was treated as "nothing to do": exit 0, skipped, error counter untouched, healthcheck pinged green. A configured scope resolving to nothing is now a failure (exit 11, `EXIT_NO_PATHS_RESOLVED`). The same applies to a host group whose paths do not exist
+- Host group paths are re-resolved after the group's `on_start`, so a hook that creates the paths works there too
+- `forget --prune` and `check` exit codes are now counted as errors. A repository that failed its integrity check still finished the run green
+- Snapshot timestamps carrying a UTC offset were read as if the offset were zero, shifting every non-UTC snapshot by up to 14 hours and skewing staleness reporting. The offset is now converted rather than discarded
+- restic's output no longer bypasses the log file and `backup -q`. `subprocess` needs a real file descriptor, so it wrote straight to the inherited stdout instead of through `TeeStream`
+- A host path spec with a depth limit (`dir@2`) expands to one entry per file, and each became its own bind mount — enough to overflow the command line on any real tree. Mounts are now collapsed to the smallest covering set of directories
+- `load_config` validates config keys, the same check `config-validate` already ran. A misspelled key silently fell back to a default instead of failing the backup
+- `dorestic list` and `dorestic view` crashed with `max() arg is an empty sequence` on a repository with no snapshots
+- Expected failures — a missing config, an unreachable repository, a bad snapshot ref — are reported as one line on stderr instead of a traceback
+- The lock file is opened with `O_NOFOLLOW` and mode 0600. Its path is derived from the repository name and `tmp_dir` defaults to a world-writable `/tmp`, so a planted symlink could redirect the truncating open
+- `backup --dry-run --only <tag>` now reports the same "no match" error as the real run rather than silently planning nothing
+
+### Internal
+- The Docker availability probe actually mounts a directory and reads it back, rather than trusting `docker info`. A daemon that refuses volumes, or one that resolves paths differently than the test process, now skips the affected tests with a reason instead of producing dozens of errors
+
 ## v0.5.4 — 2026-08-07
 
 ### Fixed
