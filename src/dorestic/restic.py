@@ -4,13 +4,14 @@ import hashlib
 import json
 import logging
 import re
+import os
 import subprocess
 import sys
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any, Literal, overload
 
-from dorestic.models import BackupConfig
+from dorestic.models import EXIT_UNMOUNTABLE_PATH, BackupConfig, BackupPath
 
 log = logging.getLogger("backup")
 
@@ -53,24 +54,130 @@ def _run_streaming(cmd: list[str]) -> int:
         return proc.wait()
 
 
-def _collapse_mounts(paths: list[Path]) -> list[str]:
-    """Reduce a path list to the smallest set of directories covering it.
+def as_backup_paths(paths: Sequence[Path | BackupPath]) -> list[BackupPath]:
+    """Treat a bare Path as a local path mounted at its own location.
+
+    Host-scope paths are resolved in our own namespace and are already stable,
+    so they need neither remapping nor namespace guarding.
+    """
+    return [
+        p if isinstance(p, BackupPath) else BackupPath(source=p, target=p)
+        for p in paths
+    ]
+
+
+def _covers_as_dir(path: Path) -> bool:
+    """Whether `path` can be bind-mounted as-is rather than via its parent.
+
+    A directory covers itself. A plain file does not — mounting its parent is
+    what keeps the mount count down — but an *unreadable* path must be treated
+    as a directory: a failed stat is not evidence that the path is a file, and
+    guessing "file" here would bind-mount the parent instead, widening what is
+    exposed to restic on the strength of an error. Binding a file directly
+    works, so the conservative answer is also the safe one.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return True
+
+
+def _collapse_mounts(paths: list[BackupPath]) -> list[BackupPath]:
+    """Reduce a path list to the smallest set of bind mounts covering it.
 
     A depth-limited host spec (`dir@2`) expands to one entry per file, and a
     bind mount each would overflow the command line on any real tree. Mounting
     the containing directories instead covers them in a handful of mounts;
     restic still reads only the paths it is given as arguments.
+
+    Collapsing is only meaningful *within one mount namespace*: a prefix
+    relationship between paths from different namespaces says nothing about
+    where the data is, and a daemon-sourced path cannot be stat'd here at all.
+    So only local, identity-mapped paths are collapsed; anything daemon-sourced
+    or remapped to a pinned target passes through untouched.
+
+    Idempotent, so a caller may collapse first to inspect the result and pass
+    it on: a collapsed local entry is a directory, which covers itself.
     """
+    collapsible = [p for p in paths if not p.daemon_sourced and not p.remapped]
+    passthrough = [p for p in paths if p.daemon_sourced or p.remapped]
+
     dirs: set[Path] = set()
-    for path in paths:
-        dirs.add(path if path.is_dir() else path.parent)
+    for p in collapsible:
+        dirs.add(p.source if _covers_as_dir(p.source) else p.source.parent)
 
     minimal: list[Path] = []
     # Shortest paths first, so an ancestor is always seen before its children.
     for candidate in sorted(dirs, key=lambda p: (len(p.parts), str(p))):
         if not any(candidate == m or m in candidate.parents for m in minimal):
             minimal.append(candidate)
-    return [str(p) for p in minimal]
+
+    mounts = [BackupPath(source=p, target=p) for p in minimal]
+    seen = {(str(m.source), str(m.target)) for m in mounts}
+    for p in passthrough:
+        spec = (str(p.source), str(p.target))
+        if spec not in seen:
+            seen.add(spec)
+            mounts.append(p)
+    return mounts
+
+
+def _provably_present(mount: BackupPath) -> bool:
+    """Whether this source is known to exist, so `-v` cannot auto-create it.
+
+    Only answerable for a local source. A daemon-sourced path is not ours to
+    stat — the answer would be about our namespace, not the daemon's — so it
+    is never "provably" anything from here.
+    """
+    if mount.daemon_sourced:
+        return False
+    try:
+        os.stat(mount.source)
+    except OSError:
+        return False
+    return True
+
+
+def unmountable_paths(mounts: list[BackupPath]) -> list[str]:
+    """Sources that cannot be bind-mounted safely, as human-readable reasons.
+
+    Only commas, for now: `--mount` parses its value as CSV and has no way to
+    express one, quoted or otherwise, so such a path has to go through `-v`.
+
+    `-v` is only dangerous because it *creates* a missing source rather than
+    failing — so where the source is already known to exist, that danger is
+    excluded and `-v` is provably safe. A comma in a local, verifiable path has
+    always worked and keeps working; the strictness lands only where the
+    uncertainty actually is, on a source we cannot check.
+    """
+    return [
+        f"{m.source}: path contains a comma, which docker --mount cannot "
+        f"express, and the source cannot be verified to exist"
+        for m in mounts
+        if ("," in str(m.source) or "," in str(m.target))
+        and not _provably_present(m)
+    ]
+
+
+def _mount_args(mount: BackupPath) -> list[str]:
+    """Bind this source read-only at its target inside the restic container.
+
+    `--mount` rather than `-v` because `-v` *creates* a missing source as an
+    empty root-owned directory and carries on, which turns a bad path into a
+    silently empty backup. `--mount` fails the run instead.
+    """
+    source, target = str(mount.source), str(mount.target)
+    if "," not in source and "," not in target:
+        return ["--mount", f"type=bind,src={source},dst={target},readonly"]
+    if not _provably_present(mount):
+        # Guarded by unmountable_paths() before restic is ever invoked; this
+        # is the backstop that keeps a new caller from bypassing that check.
+        raise ValueError(
+            f"cannot bind-mount an unverifiable path containing a comma: {source}"
+        )
+    # --mount cannot express the comma, but the source is known to exist, so
+    # the auto-create that makes -v unsafe cannot happen here.
+    return ["-v", f"{source}:{target}:ro"]
 
 
 def _build_restic_cmd(config: BackupConfig) -> list[str]:
@@ -90,7 +197,7 @@ def _build_restic_cmd(config: BackupConfig) -> list[str]:
 def run_restic(
     *args: str,
     config: BackupConfig,
-    mount_paths: list[Path] | None = None,
+    mount_paths: Sequence[Path | BackupPath] | None = None,
     hostname: str | None = None,
     capture: Literal[False] = False,
 ) -> int: ...
@@ -100,7 +207,7 @@ def run_restic(
 def run_restic(
     *args: str,
     config: BackupConfig,
-    mount_paths: list[Path] | None = None,
+    mount_paths: Sequence[Path | BackupPath] | None = None,
     hostname: str | None = None,
     capture: Literal[True],
 ) -> tuple[int, str, str]: ...
@@ -109,7 +216,7 @@ def run_restic(
 def run_restic(
     *args: str,
     config: BackupConfig,
-    mount_paths: list[Path] | None = None,
+    mount_paths: Sequence[Path | BackupPath] | None = None,
     hostname: str | None = None,
     capture: bool = False,
 ) -> int | tuple[int, str, str]:
@@ -127,8 +234,8 @@ def run_restic(
         cmd.extend(["-h", hostname])
 
     if mount_paths:
-        for path_str in _collapse_mounts(mount_paths):
-            cmd.extend(["-v", f"{path_str}:{path_str}:ro"])
+        for mount in _collapse_mounts(as_backup_paths(mount_paths)):
+            cmd.extend(_mount_args(mount))
 
     cmd.extend([config.restic_image, *args])
     log.debug("restic command: %s", " ".join(cmd))
@@ -253,19 +360,34 @@ def diff_snapshots(
 
 
 def run_scope_backup(
-    tag: str, paths: list[Path], exclude: list[str],
+    tag: str, paths: Sequence[Path | BackupPath], exclude: list[str],
     config: BackupConfig, hostname: str | None = None,
 ) -> int:
     if not paths:
         return 0
 
+    mounts = as_backup_paths(paths)
+
+    unmountable = unmountable_paths(_collapse_mounts(mounts))
+    if unmountable:
+        for reason in unmountable:
+            log.error("  cannot back up %s", reason)
+        return EXIT_UNMOUNTABLE_PATH
+
+    # restic is given the *target* paths — where the data appears inside the
+    # restic container — because those are what it records in the snapshot.
+    # For a container scope the target is pinned to the container's own path,
+    # so the snapshot path stays put even when the source does not.
     args: list[str] = ["backup", "--tag", tag]
     for pattern in exclude:
         args.extend(["--exclude", pattern])
-    args.extend(str(p) for p in paths)
+    args.extend(str(m.target) for m in mounts)
 
-    log.info("  restic backup --tag %s (%d paths)", tag, len(paths))
-    for path in paths:
-        log.info("    %s", path)
+    log.info("  restic backup --tag %s (%d paths)", tag, len(mounts))
+    for mount in mounts:
+        if mount.remapped:
+            log.info("    %s (from %s)", mount.target, mount.source)
+        else:
+            log.info("    %s", mount.target)
 
-    return run_restic(*args, config=config, mount_paths=paths, hostname=hostname)
+    return run_restic(*args, config=config, mount_paths=mounts, hostname=hostname)

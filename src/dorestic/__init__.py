@@ -32,15 +32,19 @@ from dorestic.docker import (
     resolve_container_path as resolve_container_path,
     resolve_container_paths as resolve_container_paths,
     run_docker_exec as run_docker_exec,
+    stable_mount_target as stable_mount_target,
 )
 from dorestic.models import (
+    CONTAINER_MOUNT_ROOT as CONTAINER_MOUNT_ROOT,
     DEFAULT_CONTAINER_SHELL as DEFAULT_CONTAINER_SHELL,
     DEFAULT_LABEL_PREFIX as DEFAULT_LABEL_PREFIX,
     DEFAULT_RESTIC_IMAGE as DEFAULT_RESTIC_IMAGE,
     DEFAULT_STALE_THRESHOLD_HOURS as DEFAULT_STALE_THRESHOLD_HOURS,
     EXIT_NO_PATHS_RESOLVED as EXIT_NO_PATHS_RESOLVED,
+    EXIT_UNMOUNTABLE_PATH as EXIT_UNMOUNTABLE_PATH,
     EXIT_ON_START_FAILED as EXIT_ON_START_FAILED,
     BackupConfig as BackupConfig,
+    BackupPath as BackupPath,
     BackupResult as BackupResult,
     ContainerTarget as ContainerTarget,
     DiffEntry as DiffEntry,
@@ -67,6 +71,7 @@ from dorestic.paths import (
     resolve_host_paths as resolve_host_paths,
 )
 from dorestic.restic import (
+    as_backup_paths as as_backup_paths,
     diff_snapshots as diff_snapshots,
     forget_snapshots as forget_snapshots,
     iter_snapshot_files as iter_snapshot_files,
@@ -77,4 +82,5 @@ from dorestic.restic import (
     restore_snapshot as restore_snapshot,
     run_restic as run_restic,
     run_scope_backup as run_scope_backup,
+    unmountable_paths as unmountable_paths,
 )

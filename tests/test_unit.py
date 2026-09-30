@@ -18,6 +18,7 @@ from dorestic import (
     DEFAULT_CONTAINER_SHELL,
     DEFAULT_STALE_THRESHOLD_HOURS,
     EXIT_ON_START_FAILED,
+    EXIT_UNMOUNTABLE_PATH,
     BackupConfig,
     BackupResult,
     DiffEntry,
@@ -61,12 +62,28 @@ from dorestic.display import (
     print_tag_detail,
     print_tag_summary,
 )
-from dorestic.models import RetentionPolicy, parse_snapshot_time
+from dorestic.models import BackupPath, RetentionPolicy, parse_snapshot_time
 from dorestic.restic import (
     _collapse_mounts,  # pyright: ignore[reportPrivateUsage]
+    _mount_args,  # pyright: ignore[reportPrivateUsage]
     _run_streaming,  # pyright: ignore[reportPrivateUsage]
+    as_backup_paths,
     run_restic,
+    run_scope_backup,
+    unmountable_paths,
 )
+
+
+def collapse(paths: list[Path]) -> list[tuple[str, str]]:
+    """Collapse bare local paths — the host-scope case — as (source, target)."""
+    return [
+        (str(m.source), str(m.target))
+        for m in _collapse_mounts(as_backup_paths(paths))
+    ]
+
+
+def specs(mounts: list[BackupPath]) -> list[tuple[str, str]]:
+    return [(str(m.source), str(m.target)) for m in _collapse_mounts(mounts)]
 
 
 # ── parse_comma_list ────────────────────────────────────────
@@ -2055,19 +2072,21 @@ class TestCollapseMounts:
         (tmp_path / "a.txt").write_text("a")
         (tmp_path / "b.txt").write_text("b")
 
-        assert _collapse_mounts([tmp_path / "a.txt", tmp_path / "b.txt"]) == [
-            str(tmp_path)
+        assert collapse([tmp_path / "a.txt", tmp_path / "b.txt"]) == [
+            (str(tmp_path), str(tmp_path))
         ]
 
     def test_directory_is_kept_as_itself(self, tmp_path: Path) -> None:
-        assert _collapse_mounts([tmp_path]) == [str(tmp_path)]
+        assert collapse([tmp_path]) == [(str(tmp_path), str(tmp_path))]
 
     def test_nested_paths_collapse_to_the_ancestor(self, tmp_path: Path) -> None:
         deep = tmp_path / "sub" / "deeper"
         deep.mkdir(parents=True)
         (deep / "f.txt").write_text("f")
 
-        assert _collapse_mounts([tmp_path, deep, deep / "f.txt"]) == [str(tmp_path)]
+        assert collapse([tmp_path, deep, deep / "f.txt"]) == [
+            (str(tmp_path), str(tmp_path))
+        ]
 
     def test_unrelated_trees_are_both_kept(self, tmp_path: Path) -> None:
         a = tmp_path / "a"
@@ -2075,10 +2094,61 @@ class TestCollapseMounts:
         a.mkdir()
         b.mkdir()
 
-        assert sorted(_collapse_mounts([a, b])) == [str(a), str(b)]
+        assert sorted(collapse([a, b])) == [(str(a), str(a)), (str(b), str(b))]
 
     def test_empty_input(self) -> None:
         assert _collapse_mounts([]) == []
+
+    def test_daemon_sourced_paths_are_never_collapsed(self, tmp_path: Path) -> None:
+        """A prefix relationship across namespaces is not evidence of anything.
+
+        The daemon-sourced source happens to sit under `tmp_path` as a string,
+        but it names a path in the daemon's namespace. Folding it into the
+        local mount would bind a path we merely guessed at.
+        """
+        local = tmp_path / "local"
+        local.mkdir()
+        pinned = BackupPath(
+            source=tmp_path / "pins" / "abc123",
+            target=Path("/dorestic/data"),
+            daemon_sourced=True,
+        )
+
+        mounts = specs([BackupPath(local, local), pinned])
+
+        assert (str(tmp_path / "pins" / "abc123"), "/dorestic/data") in mounts
+        assert (str(local), str(local)) in mounts
+
+    def test_daemon_sourced_path_is_not_stat_ed(self) -> None:
+        """It may name nothing locally — Docker Desktop, rootless, remote daemon."""
+        pinned = BackupPath(
+            source=Path("/does/not/exist/here"),
+            target=Path("/dorestic/data"),
+            daemon_sourced=True,
+        )
+
+        with patch("dorestic.restic._covers_as_dir") as probe:
+            mounts = specs([pinned])
+
+        probe.assert_not_called()
+        assert mounts == [("/does/not/exist/here", "/dorestic/data")]
+
+    def test_unreadable_local_path_is_not_widened_to_its_parent(
+        self, tmp_path: Path,
+    ) -> None:
+        """A failed stat is not evidence that a path is a file.
+
+        `Path.is_dir()` returns False on EACCES just as it does for a file, and
+        treating that as "file" would bind the *parent* — exposing more than
+        was asked for on the strength of an error.
+        """
+        target = tmp_path / "unreadable"
+        target.mkdir()
+
+        with patch.object(Path, "is_dir", side_effect=PermissionError(13, "denied")):
+            mounts = specs([BackupPath(target, target)])
+
+        assert mounts == [(str(target), str(target))]
 
 
 class TestResticMountArgs:
@@ -2101,10 +2171,114 @@ class TestResticMountArgs:
             run_restic("backup", config=config, mount_paths=paths)
 
         cmd = captured[0]
-        mounts = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-v"]
-        # One for the password file, one for the repository, one for tmp_path.
-        assert f"{tmp_path}:{tmp_path}:ro" in mounts
-        assert sum(1 for m in mounts if m.endswith(":ro") and str(tmp_path) in m) == 1
+        mounts = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--mount"]
+        assert mounts == [f"type=bind,src={tmp_path},dst={tmp_path},readonly"]
+
+    def test_sources_use_mount_not_v(self, tmp_path: Path) -> None:
+        """`-v` creates a missing source as an empty dir; `--mount` fails.
+
+        Backing up a path that silently became an empty directory is the one
+        outcome a backup tool must not produce quietly.
+        """
+        captured: list[list[str]] = []
+        config = BackupConfig(repository="/repo", password_file="/pw")
+
+        def record(cmd: list[str]) -> int:
+            captured.append(cmd)
+            return 0
+
+        with patch("dorestic.restic._run_streaming", side_effect=record):
+            run_restic("backup", config=config, mount_paths=[tmp_path])
+
+        cmd = captured[0]
+        assert f"type=bind,src={tmp_path},dst={tmp_path},readonly" in cmd
+        assert not any(str(tmp_path) in a for a in cmd if a.endswith(":ro"))
+
+    def test_comma_in_an_existing_local_path_still_works(self, tmp_path: Path) -> None:
+        """A comma has always worked under `-v`, and nothing here made it unsafe.
+
+        `-v` is only dangerous because it *creates* a missing source instead of
+        failing. The source is right here and demonstrably exists, so that
+        danger is excluded and the mount is provably safe. Failing it would be
+        a regression introduced by a safety fix, for a path that was never
+        unsafe.
+        """
+        odd = tmp_path / "with,comma"
+        odd.mkdir()
+        captured: list[list[str]] = []
+        config = BackupConfig(repository="/repo", password_file="/pw")
+
+        def record(cmd: list[str]) -> int:
+            captured.append(cmd)
+            return 0
+
+        with patch("dorestic.restic._run_streaming", side_effect=record):
+            code = run_scope_backup("t:host", [odd], [], config=config)
+
+        assert code == 0
+        assert f"{odd}:{odd}:ro" in captured[0]
+
+    def test_comma_in_a_missing_local_path_fails_the_scope(
+        self, tmp_path: Path,
+    ) -> None:
+        """Unverifiable, so `-v` could auto-create it and store an empty dir.
+
+        The comma has to be on the directory that actually gets mounted: a
+        missing file collapses to its parent, and it is the parent that is
+        bound and therefore the parent that `-v` would conjure up.
+        """
+        odd = tmp_path / "gone,comma" / "data.txt"
+        config = BackupConfig(repository="/repo", password_file="/pw")
+
+        with patch("dorestic.restic._run_streaming") as streaming:
+            code = run_scope_backup("t:host", [odd], [], config=config)
+
+        assert code == EXIT_UNMOUNTABLE_PATH
+        streaming.assert_not_called()
+
+    def test_comma_in_a_daemon_sourced_path_fails_the_scope(
+        self, tmp_path: Path,
+    ) -> None:
+        """Not ours to stat, so existence can never be established from here.
+
+        The path exists locally, which is exactly the trap: a local stat would
+        answer a question about our namespace, not the daemon's, and a passing
+        stat here would prove nothing about the source the daemon will mount.
+        """
+        odd = tmp_path / "with,comma"
+        odd.mkdir()
+        config = BackupConfig(repository="/repo", password_file="/pw")
+
+        with patch("dorestic.restic._run_streaming") as streaming:
+            code = run_scope_backup(
+                "t:container",
+                [BackupPath(odd, Path("/dorestic/data"), daemon_sourced=True)],
+                [],
+                config=config,
+            )
+
+        assert code == EXIT_UNMOUNTABLE_PATH
+        streaming.assert_not_called()
+
+    def test_comma_is_rejected_at_the_emitter_too(self) -> None:
+        """Backstop, so a new caller cannot route around unmountable_paths()."""
+        with pytest.raises(ValueError, match="comma"):
+            _mount_args(BackupPath(Path("/a,b"), Path("/a,b")))
+
+    def test_unmountable_paths_distinguishes_the_three_cases(
+        self, tmp_path: Path,
+    ) -> None:
+        present = tmp_path / "here,comma"
+        present.mkdir()
+        missing = tmp_path / "gone,comma"
+
+        assert unmountable_paths([BackupPath(present, present)]) == []
+        assert len(unmountable_paths([BackupPath(missing, missing)])) == 1
+        assert len(unmountable_paths([
+            BackupPath(present, Path("/dorestic/d"), daemon_sourced=True),
+        ])) == 1
+        # And a path with no comma is never in question either way.
+        assert unmountable_paths([BackupPath(Path("/nope"), Path("/nope"))]) == []
 
 
 class TestRunStreaming:

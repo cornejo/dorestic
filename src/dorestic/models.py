@@ -3,14 +3,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from docker.models.containers import Container
 
 DEFAULT_LABEL_PREFIX = "backup"
+CONTAINER_MOUNT_ROOT = "/dorestic"
 DEFAULT_RESTIC_IMAGE = "restic/restic:latest"
 EXIT_ON_START_FAILED = 10
 EXIT_NO_PATHS_RESOLVED = 11
+EXIT_UNMOUNTABLE_PATH = 12
 
 # Trims a sub-second fraction to the six digits fromisoformat accepts, leaving
 # any trailing UTC offset (or "Z") in group 2 untouched.
@@ -31,6 +34,32 @@ def parse_snapshot_time(time_str: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class BackupPath:
+    """One path handed to restic, tagged with the namespace `source` lives in.
+
+    `source` is what the daemon bind-mounts; `target` is where that appears
+    inside the restic container and is therefore what restic records as the
+    snapshot path.
+
+    `daemon_sourced` marks a source that came from `docker inspect`
+    Mounts[].Source. Such a path is meaningful only to the daemon — under
+    Docker Desktop, rootless userns, or a remote DOCKER_HOST it may name
+    nothing at all in our own mount namespace — so it must never be stat'd,
+    collapsed against local paths, or rewritten. It is only ever handed back
+    to the daemon, which is where it came from.
+    """
+
+    source: Path
+    target: Path
+    daemon_sourced: bool = False
+
+    @property
+    def remapped(self) -> bool:
+        """True when `target` differs from `source`, pinning the snapshot path."""
+        return self.source != self.target
 
 
 @dataclass

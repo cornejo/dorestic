@@ -99,6 +99,10 @@ def docker_unusable_reason() -> str | None:
     So the probe actually mounts a file and reads it back. Getting this wrong in
     either direction is expensive: too weak and the suite reports dozens of
     confusing errors, too strong and real breakage is hidden behind a skip.
+
+    This covers directory mounts, which is what the Docker-backed tests need.
+    The restic-backed ones additionally need a *file* mount — see
+    `restic_unusable_reason`.
     """
     try:
         info = subprocess.run(["docker", "info"], capture_output=True, check=False)
@@ -151,6 +155,50 @@ def docker_unusable_reason() -> str | None:
             "different filesystem than this process (sibling-container runner "
             "without a matching builds_dir?)"
         )
+    return None
+
+
+def restic_unusable_reason() -> str | None:
+    """Return why the restic-backed tests can't run, or None if they can.
+
+    Everything `docker_unusable_reason` covers, plus a single *file* bind
+    mount: `_build_restic_cmd` mounts the restic password file directly, and a
+    daemon can allow directory mounts while refusing file ones. On such a host
+    every restic-backed test skips itself from inside a fixture — invisibly —
+    while the directory probe reports everything fine. Kept separate from
+    `docker_unusable_reason` so this does not disqualify the Docker-backed
+    tests that only need directories and run there perfectly well.
+    """
+    reason = docker_unusable_reason()
+    if reason is not None:
+        return reason
+
+    tmp_root = PROJECT_ROOT / "tmp"
+    tmp_root.mkdir(exist_ok=True)
+    probe_dir = tmp_root / f".fileprobe-{uuid.uuid4().hex[:8]}"
+    probe_dir.mkdir()
+    probe_file = probe_dir / "probe"
+    sentinel = uuid.uuid4().hex
+    try:
+        probe_file.write_text(sentinel)
+        result = subprocess.run(
+            [
+                "docker", "run", "--rm",
+                "-v", f"{probe_file}:/probe:ro",
+                "alpine", "cat", "/probe",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+        try:
+            tmp_root.rmdir()
+        except OSError:
+            pass
+
+    if result.returncode != 0 or result.stdout.strip() != sentinel:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return f"cannot bind-mount a single file (restic's password file): {detail}"
     return None
 
 

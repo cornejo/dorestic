@@ -8,8 +8,10 @@ import docker
 from docker.models.containers import Container
 
 from dorestic.models import (
+    CONTAINER_MOUNT_ROOT,
     DEFAULT_CONTAINER_SHELL,
     DEFAULT_LABEL_PREFIX,
+    BackupPath,
     ContainerTarget,
     ScopeConfig,
 )
@@ -113,14 +115,31 @@ def docker_cp(container: Container, container_path: str, staging_dir: Path) -> P
     return dest
 
 
+def stable_mount_target(container_path: str) -> Path:
+    """Where `container_path` is mounted inside the restic container.
+
+    restic records the path it is given, so this is what ends up in the
+    snapshot. It is derived from the container's own path — which is stable
+    across container recreation — rather than from the host source, which is
+    not: a daemon may report an instance-scoped source (a fresh path per
+    mount, so two live sources for one directory) and a `docker cp` staging
+    dir is a fresh mkdtemp every run. Either would start a new snapshot
+    lineage on each backup and force a full rescan.
+
+    The CONTAINER_MOUNT_ROOT prefix keeps a container path like /etc from
+    shadowing the restic image's own filesystem.
+    """
+    return Path(CONTAINER_MOUNT_ROOT) / container_path.lstrip("/")
+
+
 def resolve_container_paths(
     target: ContainerTarget,
     staging_dir: Path | None = None,
-) -> list[Path]:
+) -> list[BackupPath]:
     if not target.container_scope:
         return []
 
-    resolved: list[Path] = []
+    resolved: list[BackupPath] = []
     for path_str in target.container_scope.paths:
         path = resolve_container_path(
             target.container,
@@ -128,10 +147,18 @@ def resolve_container_paths(
             target.suppress_mount_warning,
         )
         if path is not None:
-            if not path.exists():
-                log.warning("%s: resolved path %s does not exist", target.name, path)
-                continue
-            resolved.append(path)
+            # Deliberately not checked for existence here. This came from the
+            # daemon's own Mounts[].Source, so it is a path in the *daemon's*
+            # namespace: stat'ing it locally proves nothing (under Docker
+            # Desktop or a remote DOCKER_HOST it does not exist here at all)
+            # and silently drops a perfectly good path when the source is
+            # merely unreadable to us — Path.exists() returns False on EACCES.
+            # The daemon validates it when the mount is made.
+            resolved.append(BackupPath(
+                source=path,
+                target=stable_mount_target(path_str),
+                daemon_sourced=True,
+            ))
             continue
         if staging_dir is not None:
             if not target.suppress_mount_warning:
@@ -142,7 +169,12 @@ def resolve_container_paths(
                 )
             staged = docker_cp(target.container, path_str, staging_dir)
             if staged is not None:
-                resolved.append(staged)
+                # Staged under the same target as the mounted case, so a path
+                # that moves between the two keeps one snapshot lineage.
+                resolved.append(BackupPath(
+                    source=staged,
+                    target=stable_mount_target(path_str),
+                ))
     return resolved
 
 

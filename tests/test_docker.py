@@ -7,6 +7,7 @@ isolation from any production backup.enable containers.
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 
 import docker
@@ -21,6 +22,7 @@ from dorestic import (
     resolve_container_paths,
     resolve_host_paths,
     run_docker_exec,
+    stable_mount_target,
 )
 from tests.conftest import (
     TEST_LABEL_PREFIX,
@@ -228,7 +230,57 @@ class TestResolveContainerPaths:
         )
         resolved = resolve_container_paths(target)
         assert len(resolved) == 1
-        assert resolved[0] == data_dir
+        assert resolved[0].source == data_dir
+        assert resolved[0].daemon_sourced
+
+    def test_source_is_pinned_to_a_stable_target(
+        self, test_container: tuple[Container, Path],
+    ) -> None:
+        """The snapshot path must not follow the source.
+
+        A daemon may report an instance-scoped source — a fresh path per mount,
+        so a recreated container reports a different one for the same
+        directory. Recording that would start a new snapshot lineage every
+        recreation and force a full rescan each time.
+        """
+        container, _ = test_container
+        container.reload()
+
+        target = ContainerTarget(
+            name=container.name or "unknown",
+            container=container,
+            container_scope=ScopeConfig(paths=["/data"]),
+        )
+        resolved = resolve_container_paths(target)
+
+        assert resolved[0].target == stable_mount_target("/data")
+        assert resolved[0].remapped
+
+    def test_source_is_kept_even_when_unreadable(
+        self, test_container: tuple[Container, Path], monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Mounts[].Source is a daemon-namespace path and is never stat'd here.
+
+        This is the regression: `Path.exists()` returns False on EACCES just as
+        it does for a missing path, so an unreadable-but-valid source was
+        dropped with a misleading "does not exist" and the target failed with
+        "none of the configured paths resolved" — data loss reported as a
+        missing path. The daemon can read it; we never need to.
+        """
+        container, _ = test_container
+        container.reload()
+
+        def refuse(*_args: object, **_kwargs: object) -> bool:
+            raise AssertionError("daemon-sourced path must not be stat'd locally")
+
+        monkeypatch.setattr(Path, "exists", refuse)
+
+        target = ContainerTarget(
+            name=container.name or "unknown",
+            container=container,
+            container_scope=ScopeConfig(paths=["/data"]),
+        )
+        assert len(resolve_container_paths(target)) == 1
 
     def test_skips_unmounted_paths(self, test_container: tuple[Container, Path]) -> None:
         container, _ = test_container
@@ -330,3 +382,50 @@ class TestRunDockerExec:
         code, output = run_docker_exec(container, "echo hello", shell="ash")
         assert code == 0
         assert "hello" in output
+
+
+# ── docker --mount CSV behaviour ────────────────────────────
+
+
+@requires_docker
+class TestMountCsvBehaviour:
+    """Pins the assumption behind EXIT_UNMOUNTABLE_PATH.
+
+    `unmountable_paths()` rejects a comma because `docker --mount` parses its
+    value as CSV. That is a property of the docker CLI, not of dorestic, so it
+    can change under us — and the rejection is invisible until someone has a
+    path with a comma in it. If a future docker learns to quote, this test
+    fails and the restriction can be lifted rather than quietly outliving its
+    reason.
+    """
+
+    def test_mount_cannot_express_a_comma(self, tmp_path: Path) -> None:
+        odd = tmp_path / "with,comma"
+        odd.mkdir()
+        (odd / "f.txt").write_text("x")
+
+        for src in (str(odd), f'"{odd}"'):
+            result = subprocess.run(
+                [
+                    "docker", "run", "--rm",
+                    "--mount", f"type=bind,src={src},dst=/probe,readonly",
+                    "alpine", "ls", "/probe",
+                ],
+                capture_output=True, text=True,
+            )
+            assert result.returncode != 0, f"docker now accepts {src!r} — revisit"
+            assert "invalid" in (result.stderr + result.stdout).lower()
+
+    def test_v_still_accepts_a_comma(self, tmp_path: Path) -> None:
+        """The other half: `-v` handles it, which is why it looked tempting."""
+        odd = tmp_path / "with,comma"
+        odd.mkdir()
+        (odd / "f.txt").write_text("x")
+
+        result = subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{odd}:/probe:ro", "alpine", "ls", "/probe"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"daemon refuses the bind mount: {result.stderr.strip()}")
+        assert "f.txt" in result.stdout

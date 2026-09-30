@@ -305,10 +305,13 @@ def plan_backup(
     for target in targets:
         container_scope = None
         if target.container_scope:
-            paths = resolve_container_paths(target, staging_dir=None)
+            container_paths = resolve_container_paths(target, staging_dir=None)
             container_scope = DryRunScope(
                 tag=f"{target.name}:container",
-                paths=[str(p) for p in paths],
+                # The source is what a dry run is asked about — which host
+                # path would be read — while the target only names where it
+                # lands inside the restic container.
+                paths=[str(p.source) for p in container_paths],
                 exclude=target.container_scope.exclude,
                 on_start=target.container_scope.on_start,
                 on_complete=target.container_scope.on_complete,

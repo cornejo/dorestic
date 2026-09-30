@@ -6,6 +6,7 @@ Restic tests use the official restic container image.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,7 @@ from dorestic import (
     EXIT_NO_PATHS_RESOLVED,
     EXIT_ON_START_FAILED,
     BackupConfig,
+    BackupPath,
     ContainerTarget,
     HostGroup,
     ScopeConfig,
@@ -30,6 +32,7 @@ from dorestic import (
     make_restic_hostname,
     run_docker_exec,
     run_scope_backup,
+    stable_mount_target,
 )
 from dorestic.backup import orchestrate_backup
 from tests.conftest import (
@@ -851,6 +854,91 @@ class TestEndToEndRestic:
         )
         assert "important.txt" in ls_result.stdout
         assert "ignore.log" not in ls_result.stdout
+
+    def test_snapshot_path_survives_a_changed_source(
+        self,
+        backup_config: BackupConfig,
+        restic_password_file: Path,
+        docker_visible_tmp: Path,
+    ) -> None:
+        """One logical path keeps one snapshot lineage when its source moves.
+
+        A recreated container can report a fresh, instance-scoped source for
+        the same directory, and a `docker cp` fallback stages under a new
+        mkdtemp every run. Recording either as the snapshot path would start a
+        new lineage on each backup — restic groups parent snapshots by
+        host+paths — forcing a full rescan and splitting the history.
+        """
+        repo_path = Path(backup_config.repository)
+
+        first = docker_visible_tmp / "pin-aaaa"
+        second = docker_visible_tmp / "pin-bbbb"
+        for source in (first, second):
+            source.mkdir()
+            (source / "db.sql").write_text("dump")
+
+        pinned = stable_mount_target("/data")
+        for source in (first, second):
+            assert run_scope_backup(
+                "myapp:container",
+                [BackupPath(source=source, target=pinned, daemon_sourced=True)],
+                [],
+                config=backup_config,
+                hostname=make_restic_hostname("container", "myapp"),
+            ) == 0
+
+        result = restic_run(
+            "snapshots", "--json", "--tag", "myapp:container",
+            repo=repo_path, password_file=restic_password_file,
+        )
+        snapshots = json.loads(result.stdout)
+        assert len(snapshots) == 2
+        # Same recorded path both times, and neither source leaks into it.
+        assert {tuple(s["paths"]) for s in snapshots} == {(str(pinned),)}
+        assert str(first) not in result.stdout
+        assert str(second) not in result.stdout
+
+    def test_two_targets_sharing_a_path_stay_separate(
+        self,
+        backup_config: BackupConfig,
+        restic_password_file: Path,
+        docker_visible_tmp: Path,
+    ) -> None:
+        """Pinned targets collide across containers; the hostname keeps them apart.
+
+        Two containers that both back up /data now both record
+        /dorestic/data, and restic selects a parent by host and paths — not by
+        tag. Were the hostname shared, each target would pick up the other's
+        snapshot as its parent and thrash. Every scope therefore passes a
+        per-target hostname; this is what makes that load-bearing.
+        """
+        repo_path = Path(backup_config.repository)
+        pinned = stable_mount_target("/data")
+
+        for name in ("alpha", "beta"):
+            source = docker_visible_tmp / name
+            source.mkdir()
+            (source / f"{name}.txt").write_text(name)
+            assert run_scope_backup(
+                f"{name}:container",
+                [BackupPath(source=source, target=pinned, daemon_sourced=True)],
+                [],
+                config=backup_config,
+                hostname=make_restic_hostname("container", name),
+            ) == 0
+
+        result = restic_run(
+            "snapshots", "--json",
+            repo=repo_path, password_file=restic_password_file,
+        )
+        snapshots = json.loads(result.stdout)
+        hostnames = {s["hostname"] for s in snapshots}
+        # Same recorded path, distinct parent groups.
+        assert {tuple(s["paths"]) for s in snapshots} == {(str(pinned),)}
+        assert hostnames == {
+            make_restic_hostname("container", "alpha"),
+            make_restic_hostname("container", "beta"),
+        }
 
     def test_two_scopes_create_separate_snapshots(
         self,

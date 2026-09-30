@@ -68,10 +68,17 @@ jobs:
         run: |
           uv run python -c "
           import sys
-          from tests.conftest import docker_unusable_reason
+          from tests.conftest import docker_unusable_reason, restic_unusable_reason
           reason = docker_unusable_reason()
           if reason:
               sys.exit(f'Docker is not usable on this runner: {reason}')
+          # Checked separately: the restic tests also bind-mount a single file
+          # (the password file), which a daemon can refuse while still allowing
+          # directories. There they would skip from inside a fixture, so the
+          # job would pass having run none of the end-to-end coverage.
+          reason = restic_unusable_reason()
+          if reason:
+              sys.exit(f'restic tests cannot run on this runner: {reason}')
           print('Docker preflight OK')
           "
 
