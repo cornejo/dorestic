@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.0 — 2026-09-30
+
+### Changed
+- **dorestic's own exit codes moved from 10/11/12 to 64/65/66.** restic uses 10 for "repository does not exist", 11 for "already locked" and 12 for "password is incorrect", and a scope's exit code is either one of dorestic's constants or restic's code passed through the same channel — so "no paths resolved" and "repository is already locked" were the same number to anything reading it. `EXIT_ON_START_FAILED` is now 64, `EXIT_NO_PATHS_RESOLVED` 65, `EXIT_UNMOUNTABLE_PATH` 66. Anything matching on the old numbers — a cron wrapper, a healthcheck, an `on_complete` hook reading `$DORESTIC_EXIT_CODE` — needs updating. The collision predates v0.7.0 for 10 and 11; v0.7.0 added a third with `EXIT_UNMOUNTABLE_PATH`
+- **Absolute `exclude` patterns no longer match for container scopes.** Exclude patterns are passed to restic unchanged, and restic matches an absolute pattern against the snapshot path — which v0.7.0 moved from the host source to `/dorestic/<container path>`. An absolute pattern written against the old source therefore stops matching and its files are now backed up rather than skipped, silently. Relative and glob patterns are unaffected, which is how the README documents them and what every example uses. An absolute pattern can be rewritten by prefixing `/dorestic`
+
 ## v0.7.0 — 2026-09-30
 
 ### Changed

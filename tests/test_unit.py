@@ -17,6 +17,7 @@ import yaml
 from dorestic import (
     DEFAULT_CONTAINER_SHELL,
     DEFAULT_STALE_THRESHOLD_HOURS,
+    EXIT_NO_PATHS_RESOLVED,
     EXIT_ON_START_FAILED,
     EXIT_UNMOUNTABLE_PATH,
     BackupConfig,
@@ -446,6 +447,33 @@ class TestAcquireLock:
 
 
 # ── ScopeResult / ScopeConfig dataclasses ───────────────────
+
+
+class TestExitCodes:
+    """dorestic's own codes must not collide with restic's.
+
+    A scope's exit code is either one of dorestic's constants or restic's code
+    handed straight through, so a caller cannot tell which namespace a given
+    number came from. restic reserves 10 (repository does not exist), 11
+    (already locked) and 12 (wrong password); it has grown that list over time,
+    so the guard is the whole low range, not those three values.
+    """
+
+    RESTIC_RESERVED = range(1, 64)
+
+    def test_no_code_lands_in_restic_range(self):
+        for name, code in (
+            ("EXIT_ON_START_FAILED", EXIT_ON_START_FAILED),
+            ("EXIT_NO_PATHS_RESOLVED", EXIT_NO_PATHS_RESOLVED),
+            ("EXIT_UNMOUNTABLE_PATH", EXIT_UNMOUNTABLE_PATH),
+        ):
+            assert code not in self.RESTIC_RESERVED, f"{name}={code} collides with restic"
+            assert code < 126, f"{name}={code} collides with the shell's own codes"
+
+    def test_codes_are_distinct(self):
+        codes = [EXIT_ON_START_FAILED, EXIT_NO_PATHS_RESOLVED, EXIT_UNMOUNTABLE_PATH]
+        assert len(set(codes)) == len(codes)
+
 
 
 class TestDataModels:

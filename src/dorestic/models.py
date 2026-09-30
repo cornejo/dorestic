@@ -11,9 +11,14 @@ from docker.models.containers import Container
 DEFAULT_LABEL_PREFIX = "backup"
 CONTAINER_MOUNT_ROOT = "/dorestic"
 DEFAULT_RESTIC_IMAGE = "restic/restic:latest"
-EXIT_ON_START_FAILED = 10
-EXIT_NO_PATHS_RESOLVED = 11
-EXIT_UNMOUNTABLE_PATH = 12
+# Deliberately above restic's own range. restic exits 10 if the repository does
+# not exist, 11 if it is already locked, and 12 if the password is incorrect.
+# A scope's exit code is either one of these constants or restic's code passed
+# through the same channel, so an overlap makes "no paths resolved" and
+# "repository is locked" indistinguishable to anything reading the code.
+EXIT_ON_START_FAILED = 64
+EXIT_NO_PATHS_RESOLVED = 65
+EXIT_UNMOUNTABLE_PATH = 66
 
 # Trims a sub-second fraction to the six digits fromisoformat accepts, leaving
 # any trailing UTC offset (or "Z") in group 2 untouched.
