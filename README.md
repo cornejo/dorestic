@@ -258,7 +258,7 @@ host.on_start ──────→ host backup ──────→ host.on_co
 - If `on_start` fails, the backup for that scope is skipped, but `on_complete`
   still runs with the failure code.
 - A scope that is configured but whose paths all resolve to nothing is a
-  **failure** (exit 11), not a skip — an empty backup should never report
+  **failure** (exit 65), not a skip — an empty backup should never report
   success to a healthcheck.
 - `on_complete` failures log a warning but don't affect the backup's exit code.
 - `container.*` hooks run inside the target container via `docker exec`, so they

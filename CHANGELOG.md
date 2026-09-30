@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.1 — 2026-09-30
+
+### Fixed
+- The README documented `EXIT_NO_PATHS_RESOLVED` as exit 11, which v0.8.0 renumbered to 65. It is the only user-facing documentation of any dorestic exit code, and it lives in prose rather than a table — so the v0.8.0 check, which looked for an exit-code table and found none, missed it. `grep -n exit README.md` is the check that finds it
+
 ## v0.8.0 — 2026-09-30
 
 ### Changed
@@ -19,7 +24,7 @@
 - **A container path whose mount source was unreadable was dropped as "does not exist".** `Mounts[].Source` from `docker inspect` is a path in the *daemon's* namespace, and dorestic only ever hands it back to the daemon as a bind mount — so it never needs to be locally resolvable. Two local stats gated it anyway, and `Path.exists()` and `Path.is_dir()` both return `False` on `EACCES` exactly as they do for a missing path. The result was a misleading "resolved path does not exist" and, if it was the only path, the target failing with "none of the configured paths resolved" — data loss reported as a missing path, for data that was present and readable by the daemon all along. Daemon-sourced paths are no longer stat'd locally. The same indirection appears under Docker Desktop (the source names a path inside the VM), rootless Docker with a user namespace, and any remote `DOCKER_HOST`, where the source has no local meaning at all
 - **An unreadable path was silently widened to its parent.** The failed `is_dir()` above also fed mount collapsing, where "not a directory" means "bind the parent instead". A failed stat is not evidence that a path is a file, so an unreadable path now binds itself rather than exposing its parent to restic on the strength of an error
 - Mount collapsing is namespace-aware. Folding paths together by common prefix only means something within one mount namespace; daemon-sourced paths are passed through untouched instead of being compared against local ones
-- Backup sources are bind-mounted with `--mount` rather than `-v`. `-v` *creates* a missing source as an empty directory and carries on, turning a bad path into a silently empty backup; `--mount` fails the run. A path containing a comma cannot be expressed as `--mount` at all — it parses its value as CSV and quoting does not help — so such a path goes through `-v` when its source can be verified to exist — `-v` is only unsafe because it creates a *missing* source, a danger excluded once the source is known to be there — and fails its scope with the new exit code 12 (`EXIT_UNMOUNTABLE_PATH`) when it cannot: a missing source, or a daemon-sourced one, which is not ours to stat. A comma in a host path has always worked and keeps working
+- Backup sources are bind-mounted with `--mount` rather than `-v`. `-v` *creates* a missing source as an empty directory and carries on, turning a bad path into a silently empty backup; `--mount` fails the run. A path containing a comma cannot be expressed as `--mount` at all — it parses its value as CSV and quoting does not help — so such a path goes through `-v` when its source can be verified to exist — `-v` is only unsafe because it creates a *missing* source, a danger excluded once the source is known to be there — and fails its scope with the new exit code 12 (`EXIT_UNMOUNTABLE_PATH`, renumbered to 66 in v0.8.0) when it cannot: a missing source, or a daemon-sourced one, which is not ours to stat. A comma in a host path has always worked and keeps working
 
 ## v0.6.1 — 2026-09-30
 

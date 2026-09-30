@@ -475,7 +475,6 @@ class TestExitCodes:
         assert len(set(codes)) == len(codes)
 
 
-
 class TestDataModels:
     def test_scope_result_defaults(self):
         r = ScopeResult(exit_code=0)
