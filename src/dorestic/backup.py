@@ -52,8 +52,16 @@ class TeeStream(TextIOBase):
         return len(s)
 
     def flush(self) -> None:
-        self.original.flush()
-        self.log_file.flush()
+        # Neither stream is owned by the tee, so either may already be closed:
+        # TextIOBase.__del__ calls close() which calls flush(), and that
+        # finalization can land at interpreter shutdown, after run_backup() has
+        # closed the log file. Flushing a closed stream there would raise
+        # ValueError out of a destructor, which Python reports as an ignored
+        # exception with a full traceback on stderr.
+        if not self.original.closed:
+            self.original.flush()
+        if not self.log_file.closed:
+            self.log_file.flush()
 
 
 def _lock_path_for(config: BackupConfig) -> Path:
@@ -542,6 +550,10 @@ def run_backup(
         for handler in root_logger.handlers:
             if isinstance(handler, logging.StreamHandler):
                 handler.stream = original_stderr
+        # Close the tees first: that flushes them while the log file is still
+        # open, instead of leaving it to their finalizers after it is gone.
+        tee_stdout.close()
+        tee_stderr.close()
         if not log_file.closed:
             log_file.close()
         if not persistent:

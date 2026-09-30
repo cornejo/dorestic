@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.6.1 — 2026-09-30
+
+### Fixed
+- Two `ValueError: I/O operation on closed file.` tracebacks no longer follow every run. `TeeStream` is a `TextIOBase`, so its finalizer flushes it — at interpreter shutdown, long after the log file it wraps was closed. The tees are now closed before the log file, and flushing a closed stream is a no-op. Cosmetic only: it fired after the exit code was set and nothing was lost from the log, but Python 3.14 reports it with a full traceback where older versions were quiet
 
 ### Internal
 - The Docker and restic tests now run in CI on GitHub, where a hosted runner is a VM with a real daemon. GitLab's runners are non-privileged docker executors with no socket and no dind, so they keep running `-m "not docker"` only

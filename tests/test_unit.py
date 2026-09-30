@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
+import sys
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -320,6 +323,39 @@ class TestTeeStream:
         tee.write("three")
         assert original.getvalue() == "one two three"
         assert log_file.getvalue() == "one two three"
+
+    def test_flush_tolerates_a_closed_stream(self, tmp_path: Path):
+        """run_backup closes the log file while the tees are still alive."""
+        original = io.StringIO()
+        log_file = open(tmp_path / "log", "w")
+        tee = TeeStream(original, log_file)
+
+        tee.write("data")
+        log_file.close()
+        tee.flush()  # must not raise
+        original.close()
+        tee.flush()
+
+    def test_finalization_after_log_file_closed_is_silent(self, tmp_path: Path):
+        """A tee finalized at interpreter shutdown must not print a traceback.
+
+        TextIOBase.__del__ calls close() calls flush(); by then run_backup has
+        closed the log file. In-process this surfaces only as text on the real
+        stderr, so the assertion needs a child interpreter.
+        """
+        script = textwrap.dedent(f"""
+            from dorestic import TeeStream
+            log_file = open({str(tmp_path / "log")!r}, "w")
+            tee = TeeStream(open("/dev/null", "w"), log_file)
+            tee.write("data")
+            log_file.close()
+            del tee
+        """)
+        proc = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stderr == ""
 
 
 # ── acquire_lock ────────────────────────────────────────────
